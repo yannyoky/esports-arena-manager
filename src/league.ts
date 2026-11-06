@@ -1,7 +1,8 @@
 // Сезон: круговой турнир, недельный календарь, тренировки, бюджет, сохранение.
 import { Team, makeTeams } from './data';
-import { autoDraft } from './draft';
+import { autoDraftFull } from './draft';
 import { Match } from './sim';
+import { Meta, MatchRecord, PATCH_EVERY, newMeta, record, releasePatch } from './meta';
 import { Rng } from './rng';
 
 export type Training = 'atk' | 'def' | 'iq' | 'rest';
@@ -21,7 +22,7 @@ export interface Fixture {
 }
 
 export interface Season {
-  version: 3;
+  version: 4;
   seed: number;
   week: number; // 1-based
   teams: Team[];
@@ -29,9 +30,11 @@ export interface Season {
   money: number;
   log: string[];
   finished: boolean;
+  meta: Meta;
+  unseenPatch: boolean; // показать патчноуты при входе в штаб
 }
 
-const SAVE_KEY = 'arena-manager-save-v3';
+const SAVE_KEY = 'arena-manager-save-v4';
 
 // Круговая система: каждая пара команд играет дважды
 function schedule(ids: string[]): Fixture[] {
@@ -52,14 +55,16 @@ export function newSeason(seed = Date.now() % 1e9): Season {
   const rng = new Rng(seed);
   const teams = makeTeams(rng);
   return {
-    version: 3,
+    version: 4,
     seed,
     week: 1,
     teams,
     fixtures: schedule(teams.map((t) => t.id)),
     money: 20000,
-    log: ['Добро пожаловать в лигу! Соберите состав и выиграйте сезон.'],
+    log: ['Добро пожаловать в лигу! Соберите состав и выиграйте сезон.', 'Вышел предсезонный патч 1.0.'],
     finished: false,
+    meta: newMeta(seed),
+    unseenPatch: true,
   };
 }
 
@@ -78,7 +83,7 @@ export function load(): Season | null {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as Season;
-    return s.version === 3 ? s : null;
+    return s.version === 4 ? s : null;
   } catch {
     return null;
   }
@@ -150,8 +155,36 @@ export function applyTraining(s: Season, t: Training) {
   s.log.unshift(`Неделя ${s.week}: тренировка «${TRAINING_NAMES[t]}».`);
 }
 
+// Итог матча для статистики меты
+export function matchRecord(m: Match, bans: [string[], string[]], order?: Record<string, number>): MatchRecord {
+  const st = m.s;
+  return {
+    picks: m.setup.picks,
+    bans,
+    order,
+    winner: st.winner === 1 ? 1 : 0,
+    kills: st.kills[0] + st.kills[1],
+    towers: st.towersDown[0] + st.towersDown[1],
+    core: st.cores[0].hp <= 0 || st.cores[1].hp <= 0,
+    objectives: [st.objectives[0], st.objectives[1]],
+    strategies: [m.strat[0], m.strat[1]],
+  };
+}
+
+// Матч двух компьютерных команд с драфтом по текущей мете
+function aiMatch(s: Season, a: Team, b: Team, rng: Rng) {
+  const d = autoDraftFull(a, b, rng, s.meta);
+  const m = new Match({ teams: [a, b], picks: d.picks, seed: Math.floor(rng.next() * 1e9), patch: s.meta.patch }, false);
+  m.runToEnd();
+  record(s.meta, matchRecord(m, d.bans, d.order));
+  return m.s;
+}
+
+const SCRIMS = 3; // рейтинговые игры сообщества за неделю: дают мете больше статистики
+
 // Сыграть остальные матчи недели без показа и перейти к следующей
-export function finishWeek(s: Season, humanResult: { winner: string; kills: [number, number] }) {
+export function finishWeek(s: Season, humanResult: { winner: string; kills: [number, number] }, humanRec?: MatchRecord) {
+  if (humanRec) record(s.meta, humanRec);
   const rng = new Rng(s.seed + s.week * 104729);
   for (const f of s.fixtures.filter((x) => x.week === s.week)) {
     if (f.result) continue;
@@ -162,10 +195,14 @@ export function finishWeek(s: Season, humanResult: { winner: string; kills: [num
     }
     const home = teamById(s, f.home);
     const away = teamById(s, f.away);
-    const picks = autoDraft(home, away, rng);
-    const m = new Match({ teams: [home, away], picks, seed: Math.floor(rng.next() * 1e9) }, false);
-    const st = m.runToEnd();
+    const st = aiMatch(s, home, away, rng);
     f.result = { winner: st.winner === 0 ? home.id : away.id, kills: [st.kills[0], st.kills[1]] };
+  }
+  const ai = s.teams.filter((t) => !t.human);
+  for (let i = 0; i < SCRIMS; i++) {
+    const a = rng.pick(ai);
+    const b = rng.pick(ai.filter((t) => t !== a));
+    aiMatch(s, a, b, rng);
   }
   const me = humanTeam(s);
   const won = humanResult.winner === me.id;
@@ -178,6 +215,16 @@ export function finishWeek(s: Season, humanResult: { winner: string; kills: [num
     s.finished = true;
     const place = standings(s).findIndex((x) => x.team.human) + 1;
     s.log.unshift(`Сезон окончен! Ваше место: ${place}.`);
-  } else s.week++;
+  } else {
+    s.week++;
+    if ((s.week - 1) % PATCH_EVERY === 0) {
+      releasePatch(s.meta, s.week, s.seed);
+      s.unseenPatch = true;
+      const p = s.meta.patch;
+      const buffs = p.notes.filter((n) => n.kind === 'buff').length;
+      const nerfs = p.notes.filter((n) => n.kind === 'nerf').length;
+      s.log.unshift(`Вышел патч ${p.ver}: усилено героев ${buffs}, ослаблено ${nerfs}, изменений правил ${p.notes.length - buffs - nerfs}.`);
+    }
+  }
   save(s);
 }

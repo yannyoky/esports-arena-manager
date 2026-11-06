@@ -4,11 +4,12 @@ import '@fontsource/golos-text/400.css';
 import '@fontsource/golos-text/600.css';
 import './style.css';
 import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, Champion, POS_NAMES, POS_ROLES, ROLE_NAMES, Role, SIDE_COLORS, Team, champById } from './data';
-import { ORDER, PHASE_NAME, aiChoice, apply, assign, done, newDraft, taken } from './draft';
+import { DraftState, ORDER, PHASE_NAME, aiChoice, apply, assign, done, newDraft, taken } from './draft';
+import { BASE_RULES, Note, PATCH_EVERY, RULE_INFO, Rules, fmtRule, heroPower, modOf, priority, tier } from './meta';
 import { ICON, crest } from './icons';
 import {
   Season, TRAINING_NAMES, Training, applyTraining, clearSave, finishWeek, humanFixture, humanTeam, load,
-  newSeason, save, standings, teamById, totalWeeks,
+  matchRecord, newSeason, save, standings, teamById, totalWeeks,
 } from './league';
 import { portrait } from './models';
 import { drawMatch } from './render';
@@ -20,6 +21,7 @@ const app = document.getElementById('app')!;
 let season: Season = load() ?? newSeason();
 let trainedWeek = 0;
 let cleanup: (() => void) | null = null;
+let lastDraft: DraftState | null = null; // драфт текущего матча: для статистики меты
 
 const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 const r1 = (n: number) => Math.round(n);
@@ -41,6 +43,7 @@ function shell(active: string, body: string) {
     ['home', 'Штаб', ICON.stage()],
     ['roster', 'Состав', ICON.roster()],
     ['table', 'Таблица', ICON.table()],
+    ['meta', 'Мета', ICON.meta()],
   ];
   swap(`<div class="screen">
     <header class="top">
@@ -57,6 +60,7 @@ function shell(active: string, body: string) {
 function go(tab: string) {
   if (tab === 'roster') return roster();
   if (tab === 'table') return table();
+  if (tab === 'meta') return metaScreen();
   return home();
 }
 
@@ -98,6 +102,7 @@ function home() {
       <div class="opp">${esc(opp.name)}</div>
       <button class="cta" id="play" ${trained ? '' : 'disabled'}>${trained ? 'На драфт' : 'Сначала проведите тренировку'}</button>
     </section>
+    ${patchCard()}
     <section class="block">
       <h3>Тренировка недели</h3>
       <div class="train">${(Object.keys(TRAINING_NAMES) as Training[])
@@ -115,6 +120,24 @@ function home() {
       }),
   );
   document.getElementById('play')!.onclick = () => trained && draft();
+  document.getElementById('patch')!.onclick = () => metaScreen();
+}
+
+// Через сколько недель следующий патч (null — в этом сезоне больше не будет)
+function nextPatchIn() {
+  const w = season.week + (PATCH_EVERY - ((season.week - 1) % PATCH_EVERY));
+  return w > totalWeeks(season) ? null : w - season.week;
+}
+
+function patchCard() {
+  const p = season.meta.patch;
+  const n = nextPatchIn();
+  const fresh = season.unseenPatch;
+  const heroes = p.notes.filter((x) => x.id).slice(0, 4).map((x) => img(champById(x.id!), 'xs ' + (x.kind === 'buff' ? 'up' : 'down'))).join('');
+  return `<button class="block patch-card ${fresh ? 'fresh' : ''}" id="patch">
+    <div class="pc-top">${ICON.meta(18)}<b>${fresh ? 'Новый патч ' + p.ver : 'Патч ' + p.ver}</b><span class="dim small">${n ? `следующий через ${n} нед.` : 'последний в сезоне'}</span></div>
+    <div class="pc-heroes">${heroes}<span class="dim small">${p.notes.length} изменений · читать</span></div>
+  </button>`;
 }
 
 function logCard() {
@@ -155,6 +178,66 @@ function table() {
   shell('table', `<section class="block"><table class="tbl"><thead><tr><th>#</th><th>Команда</th><th>П</th><th>Пр</th><th>±</th></tr></thead><tbody>${rows}</tbody></table></section>`);
 }
 
+// ---------- Мета и патчи ----------
+
+function noteRow(n: Note) {
+  const c = n.id ? champById(n.id) : null;
+  const mark = n.kind === 'rule' ? (n.why.startsWith('▲') ? 'buff' : 'nerf') : n.kind;
+  const why = n.why.replace(/^[▲▼] /, '');
+  return `<li class="note ${mark}">${c ? img(c, 'xs') : `<span class="nico">${ICON.meta(16)}</span>`}
+    <div><b>${esc(n.text)}</b><small>${esc(why)}</small></div></li>`;
+}
+
+function metaScreen() {
+  const m = season.meta;
+  const p = m.patch;
+  season.unseenPatch = false;
+  save(season);
+  const n = nextPatchIn();
+  const tiers = (['S', 'A', 'B', 'C'] as const)
+    .map((t) => {
+      const list = CHAMPIONS.filter((c) => tier(m, c.id) === t).sort((a, b) => heroPower(m, b.id) - heroPower(m, a.id));
+      return `<div class="tier"><b class="t${t}">${t}</b><div>${list.map((c) => `<span class="th" title="${c.name}">${img(c, 'xs')}</span>`).join('') || '<span class="dim small">—</span>'}</div></div>`;
+    })
+    .join('');
+  const rows = [...CHAMPIONS]
+    .map((c) => ({ c, h: m.heroes[c.id] ?? { picks: 0, bans: 0, wins: 0, order: 0 } }))
+    .sort((a, b) => priority(b.h) - priority(a.h))
+    .slice(0, 8)
+    .map(({ c, h }) => {
+      const mod = modOf(p, c.id);
+      const tag = mod.hp * mod.dmg / mod.cd;
+      return `<tr><td class="tm">${img(c, 'xs')}${c.name}${tag > 1.001 ? ' <i class="up">▲</i>' : tag < 0.999 ? ' <i class="down">▼</i>' : ''}</td>
+      <td>${h.picks}</td><td>${h.bans}</td><td>${h.picks ? Math.round((h.wins / h.picks) * 100) + '%' : '–'}</td></tr>`;
+    })
+    .join('');
+  const rules = (Object.keys(RULE_INFO) as (keyof Rules)[])
+    .map((k) => {
+      const v = p.rules[k];
+      const b = BASE_RULES[k];
+      const d = Math.abs(v - b) < 1e-6 ? '' : (k === 'respawn' ? v < b : v > b) ? 'up' : 'down';
+      return `<tr><td>${RULE_INFO[k].name}</td><td class="${d}">${fmtRule(k, v)}</td></tr>`;
+    })
+    .join('');
+  const hist = m.history
+    .slice(1)
+    .map((h) => `<details class="hist"><summary>Патч ${h.ver} · неделя ${h.week}</summary><ul class="notes">${h.notes.map(noteRow).join('')}</ul></details>`)
+    .join('');
+  shell('meta', `
+    <section class="block patch-head">
+      <div class="row"><b>Патч ${p.ver}</b><span class="dim small">неделя ${p.week} · ${n ? `следующий через ${n} нед.` : 'последний в сезоне'}</span></div>
+      <p class="dim small">Раз в ${PATCH_EVERY} недели разработчики смотрят на статистику лиги: кого чаще берут и банят, кто побеждает. Сильных ослабляют, забытых усиливают, награды за убийства и объекты меняют.</p>
+      <ul class="notes">${p.notes.map(noteRow).join('')}</ul>
+    </section>
+    <section class="block"><h3>Тир-лист</h3>${tiers}</section>
+    <section class="block"><h3>Статистика патча</h3>${m.win.games
+      ? `<p class="dim small">Сыграно матчей на этом патче: ${m.win.games}. Самые приоритетные в драфте:</p>
+      <table class="tbl"><thead><tr><th>Герой</th><th>Пик</th><th>Бан</th><th>Побед</th></tr></thead><tbody>${rows}</tbody></table>`
+      : '<p class="dim small">Статистика появится после первых матчей на этом патче.</p>'}</section>
+    <section class="block"><h3>Награды и правила</h3><table class="tbl rules"><tbody>${rules}</tbody></table></section>
+    ${hist ? `<section class="block"><h3>Прошлые патчи</h3>${hist}</section>` : ''}`);
+}
+
 // ---------- Драфт ----------
 
 const img = (c: Champion, cls = '') => `<img class="pt ${cls}" src="${portrait(c)}" alt="">`;
@@ -175,6 +258,13 @@ function draft() {
   let left = HUMAN_TIME;
 
   const bestFor = (c: Champion) => Math.max(...me.players.map((p) => p.pool[c.role]));
+  const meta = season.meta;
+  const noteOf = (c: Champion) => meta.patch.notes.find((n) => n.id === c.id);
+  const badge = (c: Champion) => {
+    const n = noteOf(c);
+    const t = tier(meta, c.id);
+    return `${t === 'S' ? '<i class="tier-s">S</i>' : ''}${n ? `<i class="pb ${n.kind}">${n.kind === 'buff' ? '▲' : '▼'}</i>` : ''}`;
+  };
 
   const slots = (side: 0 | 1) => {
     const picks = d.picks[side];
@@ -187,12 +277,12 @@ function draft() {
       const pc = preview ? champById(preview) : null;
       return `<div class="slot s${side} ${i === liveIdx ? 'live' : ''} ${c ? 'locked' : ''}">
         ${c ? img(c) : pc ? img(pc, 'ghost') : '<span class="pt empty"></span>'}
-        <span>${c ? c.name : pc ? pc.name : ''}</span></div>`;
+        <span>${c ? c.name : pc ? pc.name : i === liveIdx ? 'выбор…' : ''}</span></div>`;
     }).join('');
   };
 
   const banRow = (side: 0 | 1) =>
-    Array.from({ length: 3 }, (_, i) => {
+    Array.from({ length: 5 }, (_, i) => {
       const id = d.bans[side][i];
       return id ? img(champById(id), 'banned') : `<span class="pt empty sm"></span>`;
     }).join('');
@@ -210,6 +300,10 @@ function draft() {
     const tk = taken(d);
     const list = CHAMPIONS.filter((c) => filter === 'all' || c.role === filter);
     const selC = sel ? champById(sel) : null;
+    const poolEl = app.querySelector('.pool');
+    const scroll = poolEl ? poolEl.scrollTop : 0;
+    const fEl = app.querySelector('.filters');
+    const fScroll = fEl ? fEl.scrollLeft : 0;
     const who = st ? `${st.act === 'ban' ? 'Бан' : 'Пик'} ${st.side === 0 ? 'синих' : 'красных'}` : 'Драфт завершён';
     swap(`<div class="screen draft">
       <div class="phase" style="--side:${st ? SIDE_COLORS[st.side] : 'var(--stage)'}">
@@ -217,8 +311,10 @@ function draft() {
         <small>${st ? `${PHASE_NAME(d.step)} · ход ${d.step + 1} из ${ORDER.length}` : ''}${myTurn ? ' · ваш ход' : ''}</small>
         <div class="timer"><i id="tbar" style="transform:scaleX(${myTurn ? left / HUMAN_TIME : 1})"></i></div>
       </div>
-      <div class="cols"><div class="col">${slots(0)}</div><div class="col">${slots(1)}</div></div>
-      <div class="bans"><div>${banRow(0)}</div>${ICON.ban(16)}<div>${banRow(1)}</div></div>
+      <div class="teams">${([0, 1] as const)
+        .map((sd) => `<div class="trow s${sd}"><div class="picks">${slots(sd)}</div>
+          <div class="tbans"><span class="lbl">${ICON.ban(13)} ${sd === mySide ? 'Ваши баны' : 'Баны соперника'}</span>${banRow(sd)}</div></div>`)
+        .join('')}</div>
       <div class="pool-wrap">
         <div class="filters">${(['all', ...ALL_ROLES] as const)
           .map((r) => `<button class="chip ${filter === r ? 'on' : ''}" data-f="${r}">${r === 'all' ? 'Все' : ROLE_NAMES[r]}</button>`)
@@ -226,26 +322,30 @@ function draft() {
         <div class="pool">${list
           .map((c) => {
             const gone = tk.has(c.id);
-            return `<button class="hero-btn ${sel === c.id ? 'on' : ''} ${aiHover === c.id ? 'ai' : ''}" data-c="${c.id}" ${gone || !myTurn ? 'disabled' : ''} aria-label="${c.name}">
-              ${img(c, gone ? 'gone' : '')}<span>${c.name}</span></button>`;
+            const by = d.picks[0].includes(c.id) ? 'p0' : d.picks[1].includes(c.id) ? 'p1' : gone ? 'bn' : '';
+            return `<button class="hero-btn ${by} ${sel === c.id ? 'on' : ''} ${aiHover === c.id ? 'ai' : ''}" data-c="${c.id}" ${gone || !myTurn ? 'disabled' : ''} aria-label="${c.name}">
+              ${img(c, gone ? 'gone' : '')}${gone ? (by === 'bn' ? `<i class="took">${ICON.ban(14)}</i>` : '') : badge(c)}<span>${c.name}</span></button>`;
           })
           .join('')}</div>
         <div class="pick-bar">${
           selC && myTurn
-            ? `<div class="info">${img(selC)}<div><b>${selC.name}</b><small>${ROLE_NAMES[selC.role]} · владение ${bestFor(selC)}</small><small>${ABILITY_TEXT[selC.ab]}</small></div></div>
+            ? `<div class="info">${img(selC)}<div><b>${selC.name}</b><small>${ROLE_NAMES[selC.role]} · владение ${bestFor(selC)} · тир ${tier(meta, selC.id)}</small><small>${noteOf(selC) ? `<span class="${noteOf(selC)!.kind === 'buff' ? 'up' : 'down'}">Патч ${meta.patch.ver}: ${noteOf(selC)!.text.split(': ')[1]}</span>` : ABILITY_TEXT[selC.ab]}</small></div></div>
                <button class="cta ${st.act}" id="lock">${st.act === 'ban' ? 'Забанить' : 'Выбрать'}</button>`
             : `<div class="hint">${myTurn ? (st.act === 'ban' ? 'Выберите героя, которого уберёте у соперника' : 'Выберите героя для своей команды') : st ? `${esc(teams[st.side].name)} думают…` : ''}</div>`
         }</div>
       </div></div>`, !first);
     if (first) cleanup = clearAll;
     first = false;
+    // перерисовка не должна сбрасывать прокрутку списка героев
+    app.querySelector('.pool')!.scrollTop = scroll;
+    app.querySelector('.filters')!.scrollLeft = fScroll;
     app.querySelectorAll<HTMLButtonElement>('[data-f]').forEach((b) => (b.onclick = () => ((filter = b.dataset.f as Role | 'all'), render())));
     app.querySelectorAll<HTMLButtonElement>('[data-c]').forEach((b) => (b.onclick = () => ((sel = b.dataset.c!), render())));
     const lock = document.getElementById('lock');
     if (lock) lock.onclick = () => commit(sel!);
   };
 
-  const recommend = () => aiChoice(d, me, opp, rng);
+  const recommend = () => aiChoice(d, me, opp, rng, meta);
 
   const commit = (id: string) => {
     clearAll();
@@ -256,7 +356,10 @@ function draft() {
   };
 
   const next = () => {
-    if (done(d)) return lineup(teams, mySide, d.picks);
+    if (done(d)) {
+      lastDraft = d;
+      return lineup(teams, mySide, d.picks);
+    }
     const st = ORDER[d.step];
     if (st.side === mySide) {
       left = HUMAN_TIME;
@@ -269,7 +372,7 @@ function draft() {
       }, 250);
     } else {
       // Соперник «думает»: сначала наводится на героя, потом фиксирует
-      const choice = aiChoice(d, opp, me, rng);
+      const choice = aiChoice(d, opp, me, rng, meta);
       render();
       timers.add(window.setTimeout(() => {
         aiHover = choice;
@@ -325,7 +428,7 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
     document.getElementById('go')!.onclick = () => {
       const p: [string[], string[]] = mySide === 0 ? [mine, theirs] : [theirs, mine];
       const st: [Strategy, Strategy] = mySide === 0 ? [strat, foeStrat] : [foeStrat, strat];
-      playMatch(new Match({ teams, picks: p, strategies: st, seed: season.seed + season.week * 977 }));
+      playMatch(new Match({ teams, picks: p, strategies: st, seed: season.seed + season.week * 977, patch: season.meta.patch }));
     };
   };
   render();
@@ -482,7 +585,10 @@ function result(m: Match) {
     <button class="cta wide" id="cont">Дальше</button></div>`;
   app.appendChild(overlay);
   document.getElementById('cont')!.onclick = () => {
-    finishWeek(season, { winner: winner.id, kills: [s.kills[0], s.kills[1]] });
+    const order = lastDraft?.order;
+    const bans: [string[], string[]] = lastDraft ? lastDraft.bans : [[], []];
+    finishWeek(season, { winner: winner.id, kills: [s.kills[0], s.kills[1]] }, matchRecord(m, bans, order));
+    lastDraft = null;
     home();
   };
 }

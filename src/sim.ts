@@ -4,6 +4,7 @@
 import { Champion, POS_ROLES, Player, Pos, Role, Team, champById } from './data';
 import { CAMPS, CORE_POS, H, LaneId, OBJECTIVES, W, lanePoint, nearestT, towerT } from './map';
 import { Rng } from './rng';
+import { BASE_RULES, Patch, Rules, modOf } from './meta';
 
 export { W, H };
 export const TICK = 1 / 30;
@@ -68,6 +69,8 @@ export interface Unit extends Ent {
   moving: boolean;
   swing: number;
   cast: number;
+  cdK: number; // множитель перезарядки умения из патча
+  streak: number; // убийств подряд без смерти
 }
 
 export type NeutralType = 'camp' | 'spirit' | 'colossus';
@@ -134,6 +137,7 @@ export interface MatchSetup {
   seed: number;
   strategies?: [Strategy, Strategy];
   slots?: [Slot[], Slot[]];
+  patch?: Patch; // баланс текущего патча: множители героев и награды
 }
 
 export type FeedItem =
@@ -147,8 +151,9 @@ export interface MatchState {
   creeps: Creep[];
   towers: Tower[];
   neutrals: Neutral[];
-  spirit: [number, number]; // сколько речных духов взяла сторона: +12% урона за каждого
-  siege: [number, number]; // время усиления колосса: +60% урона по строениям
+  spirit: [number, number]; // сколько речных духов взяла сторона: урон за каждого задаёт патч
+  siege: [number, number]; // время усиления колосса: урон по строениям задаёт патч
+  objectives: [number, number]; // взятые духи и колоссы
   cores: [Core, Core];
   kills: [number, number];
   towersDown: [number, number]; // сколько башен разрушила сторона
@@ -176,11 +181,13 @@ export class Match {
   setup: MatchSetup;
   strat: [Strategy, Strategy];
   fxOn: boolean;
+  R: Rules;
 
   constructor(setup: MatchSetup, fxOn = true) {
     this.setup = setup;
     this.fxOn = fxOn;
     this.rng = new Rng(setup.seed);
+    this.R = setup.patch?.rules ?? BASE_RULES;
     this.strat = setup.strategies ?? [autoStrategy(setup.picks[0]), autoStrategy(setup.picks[1])];
     const units: Unit[] = [];
     for (const side of [0, 1] as const) {
@@ -193,12 +200,13 @@ export class Match {
         const [cx, cy] = CORE_POS[side];
         const hx = cx + (side === 0 ? 50 : -50);
         const hy = cy - 80 + i * 40;
-        const maxHp = c.hp * (0.8 + p.def / 250) * (0.9 + mastery * 0.15) * onPos;
+        const mod = modOf(setup.patch, c.id);
+        const maxHp = mod.hp * c.hp * (0.8 + p.def / 250) * (0.9 + mastery * 0.15) * onPos;
         units.push({
           kind: 'hero', side, player: p, champ: c, slot: setup.slots?.[side]?.[i] ?? p.pos, x: hx, y: hy, hp: maxHp, maxHp, shield: 0, flash: 0,
-          dmg: c.dmg * (0.75 + p.atk / 200) * (0.85 + mastery * 0.25) * (0.85 + formK * 0.15) * onPos,
+          dmg: mod.dmg * c.dmg * (0.75 + p.atk / 200) * (0.85 + mastery * 0.25) * (0.85 + formK * 0.15) * onPos,
           armor: Math.min(0.4, p.def / 300),
-          atkT: this.rng.range(0, 0.5), abT: c.abilityCd * this.rng.range(0.3, 0.8),
+          atkT: this.rng.range(0, 0.5), abT: c.abilityCd * mod.cd * this.rng.range(0.3, 0.8), cdK: mod.cd, streak: 0,
           stun: 0, hidden: 0, dead: 0, kills: 0, deaths: 0, dealt: 0, healed: 0, level: 1, xp: 0,
           homeX: hx, homeY: hy, retreating: false, calm: 0, thinkT: this.rng.range(0, 0.3), intent: { kind: 'home' }, aggro: 0,
           face: side === 0 ? 1 : -1, moving: false, swing: 0, cast: 0,
@@ -225,6 +233,7 @@ export class Match {
       ],
       spirit: [0, 0],
       siege: [0, 0],
+      objectives: [0, 0],
       kills: [0, 0], towersDown: [0, 0], fx: [], feed: [], over: false, winner: -1, shake: 0, nextWave: 2,
     };
   }
@@ -280,7 +289,7 @@ export class Match {
 
   private gainXp(h: Unit, xp: number) {
     if (h.level >= MAX_LEVEL) return;
-    h.xp += xp * (this.strat[h.side] === 'lanes' ? 1.25 : 1); // игра от линий быстрее копит опыт
+    h.xp += xp * (this.strat[h.side] === 'lanes' ? this.R.lanesXp : 1); // игра от линий быстрее копит опыт
     while (h.level < MAX_LEVEL && h.xp >= 80 + h.level * 40) {
       h.xp -= 80 + h.level * 40;
       h.level++;
@@ -299,7 +308,9 @@ export class Match {
 
   private killHero(victim: Unit, killer: Unit | null) {
     victim.hp = 0;
-    victim.dead = 7 + victim.level * 1.8 + this.s.time / 30;
+    victim.dead = (7 + victim.level * 1.8 + this.s.time / 30) * this.R.respawn;
+    const bounty = this.R.bounty * Math.min(5, victim.streak); // награда за прерванную серию
+    victim.streak = 0;
     victim.deaths++;
     victim.shield = 0;
     victim.hidden = 0;
@@ -308,9 +319,10 @@ export class Match {
     this.s.kills[foe]++;
     if (killer) {
       killer.kills++;
-      this.gainXp(killer, 60 + victim.level * 12);
+      killer.streak++;
+      this.gainXp(killer, (60 + victim.level * 12) * this.R.killXp + bounty);
     }
-    this.shareXp(foe, victim.x, victim.y, 40 + victim.level * 8, 320);
+    this.shareXp(foe, victim.x, victim.y, (40 + victim.level * 8) * this.R.killXp + bounty, 320);
     this.s.feed.unshift({ kind: 'kill', t: this.s.time, killer, victim });
     if (this.s.feed.length > 6) this.s.feed.pop();
     this.fx({ kind: 'death', x: victim.x, y: victim.y, color: '#fff', t: 0.9 });
@@ -321,13 +333,13 @@ export class Match {
     if (dst.hp <= 0 || !this.vulnerable(dst)) return;
     let dmg = amount * this.rng.range(0.9, 1.1);
     if (src) {
-      dmg *= 1 + this.s.spirit[src.side] * 0.12;
+      dmg *= 1 + this.s.spirit[src.side] * this.R.spiritPct;
       // Охота: одиночек без союзников рядом бьём сильнее
-      if (dst.kind === 'hero' && this.strat[src.side] === 'pick' && !this.s.units.some((o) => o !== dst && o.side === dst.side && o.dead <= 0 && dist(o, dst) < 250)) dmg *= 1.25;
+      if (dst.kind === 'hero' && this.strat[src.side] === 'pick' && !this.s.units.some((o) => o !== dst && o.side === dst.side && o.dead <= 0 && dist(o, dst) < 250)) dmg *= this.R.pickBonus;
       if (dst.kind === 'tower' || dst.kind === 'core') {
         dmg *= 1 + src.level * 0.1; // опытные герои сносят строения быстрее
         if (this.s.time > 210) dmg *= 1.5; // поздняя игра: базы падают быстрее
-        if (this.s.siege[src.side] > 0) dmg *= 1.6;
+        if (this.s.siege[src.side] > 0) dmg *= this.R.siegeMult;
       }
     }
     if (dst.kind === 'neutral' && src) (dst as Neutral).target = src;
@@ -362,11 +374,12 @@ export class Match {
       n.respawn = n.type === 'camp' ? 40 : n.type === 'spirit' ? 60 : 90;
       if (src) {
         const side = src.side;
-        if (n.type === 'camp') this.shareXp(side, n.x, n.y, 70, 200);
+        if (n.type === 'camp') this.shareXp(side, n.x, n.y, this.R.campXp, 200);
         else {
-          this.shareXp(side, n.x, n.y, n.type === 'spirit' ? 120 : 200, 400);
+          this.shareXp(side, n.x, n.y, n.type === 'spirit' ? this.R.spiritXp : this.R.colossusXp, 400);
+          this.s.objectives[side]++;
           if (n.type === 'spirit') this.s.spirit[side] = Math.min(3, this.s.spirit[side] + 1);
-          else this.s.siege[side] = 60;
+          else this.s.siege[side] = this.R.siegeTime;
           this.s.feed.unshift({ kind: 'objective', t: this.s.time, side, type: n.type });
           if (this.s.feed.length > 6) this.s.feed.pop();
           this.fx({ kind: 'level', x: n.x, y: n.y, color: '#ffd166', t: 1.2, text: n.type === 'spirit' ? 'Дух реки' : 'Колосс' });
@@ -377,7 +390,7 @@ export class Match {
       const t = e as Tower;
       const foe = (1 - t.side) as 0 | 1;
       this.s.towersDown[foe]++;
-      this.shareXp(foe, t.x, t.y, 120, 400);
+      this.shareXp(foe, t.x, t.y, this.R.towerXp, 400);
       this.s.feed.unshift({ kind: 'tower', t: this.s.time, side: t.side, lane: t.lane });
       if (this.s.feed.length > 6) this.s.feed.pop();
       this.fx({ kind: 'rubble', x: t.x, y: t.y, color: '#d8cfc0', t: 1.2 });
@@ -931,7 +944,7 @@ export class Match {
       const it = u.intent;
       const tgt = it.kind === 'attack' ? it.target : null;
       if (u.abT <= 0 && this.ability(u, tgt ?? this.chooseHeroTarget(u, u.champ.range + 60))) {
-        u.abT = u.champ.abilityCd;
+        u.abT = u.champ.abilityCd * u.cdK;
         u.cast = 0.35;
       }
 

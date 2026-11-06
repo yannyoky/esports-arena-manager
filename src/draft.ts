@@ -2,6 +2,7 @@
 // Синяя сторона (0) выбирает первой, красная (1) получает два пика подряд.
 import { CHAMPIONS, Champion, POS_ROLES, Role, Team, ALL_ROLES } from './data';
 import { Rng } from './rng';
+import { Meta, heroPower } from './meta';
 
 export type Act = 'ban' | 'pick';
 export interface Step {
@@ -26,9 +27,10 @@ export interface DraftState {
   step: number;
   bans: [string[], string[]];
   picks: [string[], string[]];
+  order: Record<string, number>; // на каком ходу взят или забанен герой
 }
 
-export const newDraft = (): DraftState => ({ step: 0, bans: [[], []], picks: [[], []] });
+export const newDraft = (): DraftState => ({ step: 0, bans: [[], []], picks: [[], []], order: {} });
 
 export const taken = (d: DraftState) => new Set([...d.bans[0], ...d.bans[1], ...d.picks[0], ...d.picks[1]]);
 export const done = (d: DraftState) => d.step >= ORDER.length;
@@ -36,6 +38,7 @@ export const done = (d: DraftState) => d.step >= ORDER.length;
 export function apply(d: DraftState, id: string) {
   const st = ORDER[d.step];
   (st.act === 'ban' ? d.bans : d.picks)[st.side].push(id);
+  d.order[id] = d.step;
   d.step++;
 }
 
@@ -59,17 +62,19 @@ const missingRoles = (team: Team, picks: string[]) => {
 };
 
 // Компьютерный капитан: банит сильных для соперника, пикает под свой состав
-export function aiChoice(d: DraftState, me: Team, foe: Team, rng: Rng): string {
+// Капитан следит за метой: усиленных героев берёт и банит охотнее, ослабленных обходит
+export function aiChoice(d: DraftState, me: Team, foe: Team, rng: Rng, meta?: Meta): string {
   const st = ORDER[d.step];
   const free = CHAMPIONS.filter((c) => !taken(d).has(c.id));
+  const pw = (c: Champion) => (meta ? heroPower(meta, c.id) * 110 : 0);
   const score = (c: Champion) => {
-    if (st.act === 'ban') return teamFit(foe, c) + rng.range(0, 25);
+    if (st.act === 'ban') return teamFit(foe, c) + pw(c) + rng.range(0, 25);
     const need = missingRoles(me, d.picks[st.side]);
     const roleBonus = need.includes(c.role) ? 30 : -25;
     // Без поддержки и стража состав разваливается: подтягиваем их к середине драфта
     const core: Role[] = ['tank', 'support'];
     const coreBonus = core.includes(c.role) && need.includes(c.role) && d.picks[st.side].length >= 2 ? 15 : 0;
-    return teamFit(me, c) + roleBonus + coreBonus + rng.range(0, 20);
+    return teamFit(me, c) + roleBonus + coreBonus + pw(c) + rng.range(0, 20);
   };
   return free.sort((a, b) => score(b) - score(a))[0].id;
 }
@@ -103,11 +108,13 @@ export function assign(team: Team, picks: string[]): string[] {
 }
 
 // Полный драфт без участия человека (матчи других команд)
-export function autoDraft(a: Team, b: Team, rng: Rng): [string[], string[]] {
+export function autoDraftFull(a: Team, b: Team, rng: Rng, meta?: Meta) {
   const d = newDraft();
   while (!done(d)) {
     const side = ORDER[d.step].side;
-    apply(d, aiChoice(d, side === 0 ? a : b, side === 0 ? b : a, rng));
+    apply(d, aiChoice(d, side === 0 ? a : b, side === 0 ? b : a, rng, meta));
   }
-  return [assign(a, d.picks[0]), assign(b, d.picks[1])];
+  return { picks: [assign(a, d.picks[0]), assign(b, d.picks[1])] as [string[], string[]], bans: d.bans, order: d.order };
 }
+
+export const autoDraft = (a: Team, b: Team, rng: Rng, meta?: Meta) => autoDraftFull(a, b, rng, meta).picks;
