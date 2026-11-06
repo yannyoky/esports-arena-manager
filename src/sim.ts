@@ -70,6 +70,11 @@ export interface Unit extends Ent {
   swing: number;
   cast: number;
   cdK: number; // множитель перезарядки умения из патча
+  assists: number;
+  gold: number; // заработанное золото: показатель вклада
+  heroDmg: number; // урон по героям
+  towerDmg: number; // урон по строениям
+  hitBy: Record<number, number>; // индекс врага → когда он последний раз бил
   streak: number; // убийств подряд без смерти
 }
 
@@ -138,6 +143,7 @@ export interface MatchSetup {
   strategies?: [Strategy, Strategy];
   slots?: [Slot[], Slot[]];
   patch?: Patch; // баланс текущего патча: множители героев и награды
+  chem?: [number, number]; // сыгранность составов 0–1
 }
 
 export type FeedItem =
@@ -154,6 +160,7 @@ export interface MatchState {
   spirit: [number, number]; // сколько речных духов взяла сторона: урон за каждого задаёт патч
   siege: [number, number]; // время усиления колосса: урон по строениям задаёт патч
   objectives: [number, number]; // взятые духи и колоссы
+  goldLine: number[]; // разница золота синих и красных каждые 10 секунд
   cores: [Core, Core];
   kills: [number, number];
   towersDown: [number, number]; // сколько башен разрушила сторона
@@ -195,8 +202,11 @@ export class Match {
         const c = champById(setup.picks[side][i]);
         // Герой не своей позиции слабее: игрок непривычен к такой роли
         const onPos = POS_ROLES[p.pos].includes(c.role) ? 1 : 0.92;
-        const mastery = p.pool[c.role] / 100;
-        const formK = p.form / 100;
+        // любимый герой даёт прибавку к владению
+        const mastery = Math.min(1.05, p.pool[c.role] / 100 + (p.favs?.includes(c.id) ? 0.12 : 0));
+        // форма, настроение и усталость
+        const formK = (p.form / 100) * (0.92 + (p.morale ?? 70) / 1250) * (1 - (p.fatigue ?? 0) / 500);
+        const chemK = 0.97 + (setup.chem?.[side] ?? 0.5) * 0.06;
         const [cx, cy] = CORE_POS[side];
         const hx = cx + (side === 0 ? 50 : -50);
         const hy = cy - 80 + i * 40;
@@ -204,9 +214,9 @@ export class Match {
         const maxHp = mod.hp * c.hp * (0.8 + p.def / 250) * (0.9 + mastery * 0.15) * onPos;
         units.push({
           kind: 'hero', side, player: p, champ: c, slot: setup.slots?.[side]?.[i] ?? p.pos, x: hx, y: hy, hp: maxHp, maxHp, shield: 0, flash: 0,
-          dmg: mod.dmg * c.dmg * (0.75 + p.atk / 200) * (0.85 + mastery * 0.25) * (0.85 + formK * 0.15) * onPos,
+          dmg: chemK * mod.dmg * c.dmg * (0.75 + p.atk / 200) * (0.85 + mastery * 0.25) * (0.85 + formK * 0.15) * onPos,
           armor: Math.min(0.4, p.def / 300),
-          atkT: this.rng.range(0, 0.5), abT: c.abilityCd * mod.cd * this.rng.range(0.3, 0.8), cdK: mod.cd, streak: 0,
+          atkT: this.rng.range(0, 0.5), abT: c.abilityCd * mod.cd * this.rng.range(0.3, 0.8), cdK: mod.cd, streak: 0, assists: 0, gold: 0, heroDmg: 0, towerDmg: 0, hitBy: {},
           stun: 0, hidden: 0, dead: 0, kills: 0, deaths: 0, dealt: 0, healed: 0, level: 1, xp: 0,
           homeX: hx, homeY: hy, retreating: false, calm: 0, thinkT: this.rng.range(0, 0.3), intent: { kind: 'home' }, aggro: 0,
           face: side === 0 ? 1 : -1, moving: false, swing: 0, cast: 0,
@@ -234,6 +244,7 @@ export class Match {
       spirit: [0, 0],
       siege: [0, 0],
       objectives: [0, 0],
+      goldLine: [0],
       kills: [0, 0], towersDown: [0, 0], fx: [], feed: [], over: false, winner: -1, shake: 0, nextWave: 2,
     };
   }
@@ -288,6 +299,7 @@ export class Match {
   }
 
   private gainXp(h: Unit, xp: number) {
+    h.gold += xp;
     if (h.level >= MAX_LEVEL) return;
     h.xp += xp * (this.strat[h.side] === 'lanes' ? this.R.lanesXp : 1); // игра от линий быстрее копит опыт
     while (h.level < MAX_LEVEL && h.xp >= 80 + h.level * 40) {
@@ -320,9 +332,19 @@ export class Match {
     if (killer) {
       killer.kills++;
       killer.streak++;
+      killer.gold += 100;
       this.gainXp(killer, (60 + victim.level * 12) * this.R.killXp + bounty);
     }
     this.shareXp(foe, victim.x, victim.y, (40 + victim.level * 8) * this.R.killXp + bounty, 320);
+    // помощь: все враги, кто бил жертву за последние 8 секунд
+    for (const [i, t] of Object.entries(victim.hitBy)) {
+      const a = this.s.units[+i];
+      if (a !== killer && this.s.time - t < 8) {
+        a.assists++;
+        a.gold += 50;
+      }
+    }
+    victim.hitBy = {};
     this.s.feed.unshift({ kind: 'kill', t: this.s.time, killer, victim });
     if (this.s.feed.length > 6) this.s.feed.pop();
     this.fx({ kind: 'death', x: victim.x, y: victim.y, color: '#fff', t: 0.9 });
@@ -355,7 +377,13 @@ export class Match {
       if (src) src.aggro = 1.5;
     }
     if ((dst.kind === 'tower' || dst.kind === 'core') && !src) dmg *= 1.5; // крипы хорошо бьют строения
-    if (src) src.dealt += dmg;
+    if (src) {
+      src.dealt += dmg;
+      if (dst.kind === 'hero') {
+        src.heroDmg += dmg;
+        (dst as Unit).hitBy[this.s.units.indexOf(src)] = this.s.time;
+      } else if (dst.kind === 'tower' || dst.kind === 'core') src.towerDmg += dmg;
+    }
     dst.hp -= dmg;
     dst.flash = 0.15;
     if (dst.kind === 'core') (dst as Core).hit = 0.15;
@@ -976,6 +1004,10 @@ export class Match {
     for (const c of s.cores) this.stepTower(c, dt);
     for (const n of s.neutrals) this.stepNeutral(n, dt);
     s.siege = [Math.max(0, s.siege[0] - dt), Math.max(0, s.siege[1] - dt)];
+    if (s.time >= s.goldLine.length * 10) {
+      const g = (sd: 0 | 1) => s.units.reduce((a, u) => a + (u.side === sd ? u.gold : 0), 0);
+      s.goldLine.push(Math.round(g(0) - g(1)));
+    }
 
     if (s.cores[0].hp <= 0 || s.cores[1].hp <= 0) {
       s.over = true;

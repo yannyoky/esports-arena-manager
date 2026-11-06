@@ -303,3 +303,75 @@ main { flex: 1; padding: 8px max(16px, env(safe-area-inset-right)) calc(88px + e
 .tbl.rules td:last-child { text-align: right; font-weight: 600; }
 .hist summary { cursor: pointer; padding: 6px 0; color: var(--muted); font-weight: 600; }
 .hist .notes { margin-bottom: 8px; }
+
+/* ---------- Клуб, рынок, состав ---------- */
+.money.neg { color: var(--bad); }
+.center { text-align: center; }
+.sheet { position: relative; }
+.sheet .x { position: absolute; top: 10px; right: 12px; width: 36px; height: 36px; border-radius: 50%; font-size: 24px; line-height: 1; color: var(--muted); background: var(--panel-2); }
+.sheet h2 { padding-right: 40px; }
+.sheet h3 { font-size: 15px; margin-top: 2px; }
+.toast { position: fixed; left: 50%; bottom: calc(96px + env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 9; background: var(--led); color: var(--venue); font-weight: 600; font-size: 14px; padding: 10px 16px; border-radius: 12px; max-width: calc(100% - 32px); text-align: center; box-shadow: 0 10px 30px -10px #000; animation: rise 240ms var(--ease); }
+.prow { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 6px; border-radius: 12px; color: var(--led); transition: background-color 140ms var(--ease), transform 140ms var(--ease); }
+.prow + .prow { border-top: 1px solid var(--line); border-radius: 0; }
+.prow:active { transform: scale(0.98); background: var(--panel-2); }
+.prow .posl { width: 56px; }
+.pmain { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.pmain b { font-family: var(--display); font-weight: 400; font-size: 16px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pmain small { color: var(--muted); font-size: 12px; }
+.favs { display: flex; gap: 2px; }
+.prow em { font-style: normal; font-size: 13px; font-variant-numeric: tabular-nums; text-align: right; min-width: 0; }
+.prow em.price { display: flex; flex-direction: column; color: var(--stage); font-weight: 600; }
+.prow em.price small { color: var(--muted); font-weight: 600; font-size: 11px; }
+.pcard { display: flex; flex-direction: column; gap: 8px; }
+.pcard .row b { font-family: var(--display); font-weight: 400; font-size: 22px; }
+.favline { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.favline span { margin-right: 4px; }
+.favline small { font-size: 12px; margin-right: 6px; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.talk { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.chance { position: relative; height: 30px; border-radius: 10px; background: var(--panel-2); overflow: hidden; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; }
+.chance i { position: absolute; left: 0; top: 0; bottom: 0; width: var(--v); background: color-mix(in srgb, var(--good) 35%, transparent); transition: width 220ms var(--ease); }
+.chance span { position: relative; }
+.acts { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 10px; }
+.acts-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.opt.sm { min-height: 0; padding: 10px; font-size: 13px; }
+.chem { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+.chem i { display: block; height: 100%; width: var(--v); background: var(--good); }
+.staff { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; padding: 8px 0; }
+.staff + .staff { border-top: 1px solid var(--line); }
+.staff b { font-family: var(--display); font-weight: 400; font-size: 16px; display: block; }
+.staff small { color: var(--muted); font-size: 12px; }
+.staff ul { margin: 4px 0 0; padding-left: 16px; font-size: 13px; color: var(--muted); }
+.staff .chip { flex: none; }
+.sponsor { display: flex; flex-direction: column; text-align: left; gap: 2px; width: 100%; padding: 10px 12px; border-radius: 12px; background: var(--panel-2); color: var(--led); }
+.sponsor b { font-family: var(--display); font-weight: 400; }
+.sponsor small { color: var(--muted); font-size: 13px; }
+.sponsor.on { box-shadow: inset 0 0 0 2px var(--good); }
+button.sponsor:active { transform: scale(0.98); }
+.trophies { display: flex; flex-direction: column; gap: 4px; color: var(--stage); font-weight: 600; font-size: 14px; }
+.trophies span { display: inline-flex; align-items: center; gap: 6px; }
+.marquee p { margin: 0; color: var(--muted); }
+.bracket { display: flex; flex-direction: column; gap: 10px; }
+.round { display: flex; flex-direction: column; gap: 6px; }
+.round small { color: var(--muted); font-weight: 600; font-size: 12px; }
+.tie { display: flex; flex-direction: column; border-radius: 10px; overflow: hidden; background: var(--panel-2); }
+.bt { display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 14px; }
+.bt + .bt { border-top: 1px solid var(--line); }
+.bt.win { color: var(--stage); font-weight: 600; }
+.bt.lose { opacity: 0.55; }
+.bt.me span { text-decoration: underline; text-underline-offset: 3px; }
+.gold { display: flex; flex-direction: column; gap: 4px; }
+.gold svg { width: 100%; height: 70px; background: var(--panel-2); border-radius: 10px; }
+.gold .zero { stroke: var(--line); stroke-width: 1; }
+.gold .gl { fill: none; stroke: var(--stage); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.tbl-wrap { overflow-x: auto; margin: 0 -4px; }
+.tbl.stats { font-size: 12.5px; }
+.tbl.stats td, .tbl.stats th { padding: 6px 4px; white-space: nowrap; }
+.tbl.stats .nk { max-width: 74px; overflow: hidden; text-overflow: ellipsis; }
+.tbl.stats tr.gap td { border: 0; padding: 3px; }
+.hero-btn .fav { position: absolute; bottom: 20px; right: 6px; font-style: normal; font-size: 12px; color: #ff7aa8; }
+.hero-btn .tipl { position: absolute; bottom: 20px; left: 4px; font-style: normal; font-size: 9px; font-weight: 600; background: var(--good); color: #0c1a10; border-radius: 4px; padding: 0 3px; }
+.hero-btn.tip .pt { box-shadow: 0 0 0 2px var(--good); }
+.tabs button span { font-size: 11px; }
+.sheet h2.sm { font-size: 22px; }

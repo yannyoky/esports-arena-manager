@@ -3,13 +3,16 @@ import '@fontsource/russo-one/400.css';
 import '@fontsource/golos-text/400.css';
 import '@fontsource/golos-text/600.css';
 import './style.css';
-import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, Champion, POS_NAMES, POS_ROLES, ROLE_NAMES, Role, SIDE_COLORS, Team, champById } from './data';
+import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, Champion, POS_NAMES, POS_ROLES, Player, Pos, ROLE_NAMES, Role, SIDE_COLORS, Team, champById, ovr, value } from './data';
 import { DraftState, ORDER, PHASE_NAME, aiChoice, apply, assign, done, newDraft, taken } from './draft';
 import { BASE_RULES, Note, PATCH_EVERY, RULE_INFO, Rules, fmtRule, heroPower, modOf, priority, tier } from './meta';
 import { ICON, crest } from './icons';
 import {
-  Season, TRAINING_NAMES, Training, applyTraining, clearSave, finishWeek, humanFixture, humanTeam, load,
-  matchRecord, newSeason, save, standings, teamById, totalWeeks,
+  ACADEMY_COST, ACADEMY_WEEKLY, Deal, Fixture, LEAGUE_WEEKS, ROSTER_MAX, STAFF_INFO, STAFF_MAX, STAGE_NAMES, Season, Stage, StaffRole,
+  TRAINING_NAMES, Training, acceptChance, applyTraining, asking, canTalk, chemistry, chooseSponsor, dropProspect, finishWeek, hireStaff,
+  humanFixture, humanTeam, load, matchRecord, matchSetup, negotiate, newSeason, openAcademy, owner, potentialText, release, roster,
+  save, saveReplay, sell, sellPrice, signingBonus, sponsorText, staffCost, staffSalary, standings, startNextSeason, swapStarter,
+  teamById, totalWeeks, transferFee, upfront,
 } from './league';
 import { portrait } from './models';
 import { drawMatch } from './render';
@@ -19,7 +22,6 @@ import { MATCH_TIME, Match, NEUTRAL_NAMES, STRATEGY_TEXT, Strategy, autoStrategy
 
 const app = document.getElementById('app')!;
 let season: Season = load() ?? newSeason();
-let trainedWeek = 0;
 let cleanup: (() => void) | null = null;
 let lastDraft: DraftState | null = null; // драфт текущего матча: для статистики меты
 
@@ -42,13 +44,16 @@ function shell(active: string, body: string) {
   const tabs: [string, string, string][] = [
     ['home', 'Штаб', ICON.stage()],
     ['roster', 'Состав', ICON.roster()],
+    ['market', 'Рынок', ICON.swap()],
+    ['club', 'Клуб', ICON.shield()],
     ['table', 'Таблица', ICON.table()],
     ['meta', 'Мета', ICON.meta()],
   ];
+  const when = season.finished ? 'Межсезонье' : season.week <= LEAGUE_WEEKS ? `Неделя ${season.week}/${LEAGUE_WEEKS}` : season.week <= LEAGUE_WEEKS + 2 ? 'Плей-офф' : 'Кубок мира';
   swap(`<div class="screen">
     <header class="top">
       <div class="brand">${crest(me.color, me.tag, 30)}<span>${esc(me.name)}</span></div>
-      <div class="meta"><span>Неделя ${season.week}/${totalWeeks(season)}</span><span class="money">${ICON.coin(16)}${season.money.toLocaleString('ru')}</span></div>
+      <div class="meta"><span>С${season.seasonNo} · ${when}</span><span class="money ${season.money < 0 ? 'neg' : ''}">${ICON.coin(16)}${season.money.toLocaleString('ru')}</span></div>
     </header>
     <main>${body}</main>
     <nav class="tabs">${tabs
@@ -58,68 +63,188 @@ function shell(active: string, body: string) {
 }
 
 function go(tab: string) {
-  if (tab === 'roster') return roster();
+  if (tab === 'roster') return rosterScreen();
+  if (tab === 'market') return market();
+  if (tab === 'club') return club();
   if (tab === 'table') return table();
   if (tab === 'meta') return metaScreen();
   return home();
 }
 
 const record = (t: Team) => {
-  const st = standings(season).find((x) => x.team.id === t.id)!;
-  return `${st.wins}–${st.losses}`;
+  const st = standings(season).find((x) => x.team.id === t.id);
+  return st ? `${st.wins}–${st.losses}` : 'гость';
 };
+
+const on = (sel: string, fn: (el: HTMLElement) => void) => app.querySelectorAll<HTMLElement>(sel).forEach((el) => (el.onclick = () => fn(el)));
+
+// ---------- Всплывающие окна ----------
+
+function sheet(html: string, onClose?: () => void) {
+  app.querySelector('.overlay')?.remove();
+  const o = document.createElement('div');
+  o.className = 'overlay';
+  o.innerHTML = `<div class="sheet"><button class="x" aria-label="Закрыть">×</button>${html}</div>`;
+  app.appendChild(o);
+  const close = () => {
+    o.remove();
+    onClose?.();
+  };
+  o.querySelector<HTMLButtonElement>('.x')!.onclick = close;
+  o.onclick = (e) => e.target === o && close();
+  return { el: o, close };
+}
+
+function toast(text: string) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = text;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 2600);
+}
+
+// ---------- Карточка игрока ----------
+
+const findPlayer = (id: string) => {
+  for (const t of season.teams) for (const p of roster(t)) if (p.id === id) return p;
+  return season.market.find((p) => p.id === id) ?? season.academy.find((p) => p.id === id)!;
+};
+
+const mood = (p: Player) => (p.morale >= 75 ? 'довольный' : p.morale >= 45 ? 'спокойный' : 'недовольный');
+
+function playerRow(p: Player, right = '', cls = '') {
+  return `<button class="prow ${cls}" data-p="${p.id}">
+    <span class="posl">${POS_NAMES[p.pos]}</span>
+    <div class="pmain"><b>${esc(p.nick)}</b><small>${p.age} лет · сила ${r1(ovr(p))}${p.fatigue > 60 ? ' · <i class="warn">устал</i>' : ''}${p.morale < 40 ? ' · <i class="warn">недоволен</i>' : ''}</small></div>
+    <div class="favs">${p.favs.map((id) => img(champById(id), 'xs')).join('')}</div>
+    ${right}</button>`;
+}
+
+function playerInfo(p: Player) {
+  const t = owner(season, p);
+  return `<div class="pcard">
+    <div class="row"><b>${esc(p.nick)}</b><span class="pos">${POS_NAMES[p.pos]}</span></div>
+    <div class="dim small">${p.age} лет · ${t ? esc(t.name) : season.academy.includes(p) ? 'академия' : 'свободный агент'} · потенциал ${potentialText(season, p)} · стоимость ${value(p).toLocaleString('ru')}</div>
+    ${statBar('Атака', p.atk)}${statBar('Защита', p.def)}${statBar('Тактика', p.iq)}${statBar('Форма', p.form)}${statBar('Настроение', p.morale)}${statBar('Усталость', p.fatigue)}
+    <div class="favline"><span class="dim small">Любимые герои</span>${p.favs.map((id) => `${img(champById(id), 'xs')}<small>${champById(id).name}</small>`).join('')}</div>
+    <div class="roles">${[...ALL_ROLES].sort((a, b) => p.pool[b] - p.pool[a]).slice(0, 3).map((r) => `<span class="chip">${ROLE_NAMES[r]} ${p.pool[r]}</span>`).join('')}</div>
+    ${t || season.academy.includes(p) ? `<div class="dim small">Зарплата ${p.salary} в неделю${t?.human ? ` · контракт ещё ${Math.max(0, p.contract)} сез. · ${mood(p)}` : ''}</div>` : ''}
+  </div>`;
+}
+
+// Переговоры о зарплате и сроке контракта
+function talk(p: Player, deal: Deal, back: () => void) {
+  const ask = asking(season, p, deal);
+  let offer = ask;
+  let years = 2;
+  const cost = upfront(p, deal);
+  const title = { sign: 'Подписать свободного агента', buy: 'Купить игрока', renew: 'Продлить контракт', promote: 'Перевести из академии' }[deal];
+  const render = () => {
+    const ch = acceptChance(season, p, offer, deal);
+    const steps = [0.8, 0.9, 1, 1.1].map((k) => Math.round((ask * k) / 10) * 10);
+    s.el.querySelector('.sheet')!.innerHTML = `<button class="x" aria-label="Закрыть">×</button>
+      <h2 class="sm">${title}</h2>${playerInfo(p)}
+      ${canTalk(season, p) ? `
+      <div class="talk">
+        <div class="dim small">Просит ${ask} в неделю${cost ? ` · ${deal === 'buy' ? 'трансфер' : 'подъёмные'} ${cost.toLocaleString('ru')} сразу` : ''}</div>
+        <h3>Зарплата в неделю</h3>
+        <div class="seg">${steps.map((v) => `<button class="chip ${offer === v ? 'on' : ''}" data-o="${v}">${v}</button>`).join('')}</div>
+        <h3>Срок контракта</h3>
+        <div class="seg">${[1, 2, 3].map((y) => `<button class="chip ${years === y ? 'on' : ''}" data-y="${y}">${y} сез.</button>`).join('')}</div>
+        <div class="chance"><i style="--v:${Math.round(ch * 100)}%"></i><span>Шанс согласия ${Math.round(ch * 100)}%</span></div>
+        <button class="cta wide" id="offer">Предложить</button>
+      </div>` : `<p class="warn">${esc(p.nick)} пока не хочет разговаривать. Попробуйте на следующей неделе.</p>`}`;
+    s.el.querySelector<HTMLButtonElement>('.x')!.onclick = s.close;
+    s.el.querySelectorAll<HTMLButtonElement>('[data-o]').forEach((b) => (b.onclick = () => ((offer = +b.dataset.o!), render())));
+    s.el.querySelectorAll<HTMLButtonElement>('[data-y]').forEach((b) => (b.onclick = () => ((years = +b.dataset.y!), render())));
+    const ob = s.el.querySelector<HTMLButtonElement>('#offer');
+    if (ob)
+      ob.onclick = () => {
+        const r = negotiate(season, p, offer, years, deal);
+        toast(r.text);
+        if (r.ok) s.close();
+        else render();
+      };
+  };
+  const s = sheet('', back);
+  render();
+}
 
 // ---------- Штаб ----------
 
 const TRAIN_ICON: Record<Training, string> = { atk: ICON.sword(22), def: ICON.shield(22), iq: ICON.brain(22), rest: ICON.rest(22) };
 
+function trainingBlock(trained: boolean) {
+  return `<section class="block">
+      <h3>Тренировка недели</h3>
+      <div class="train">${(Object.keys(TRAINING_NAMES) as Training[])
+        .map((t) => `<button class="opt" data-train="${t}" ${trained ? 'disabled' : ''}>${TRAIN_ICON[t]}<span>${TRAINING_NAMES[t]}</span></button>`)
+        .join('')}</div>
+      <p class="dim small">Тренировки навыков утомляют игроков, отдых снимает усталость. Сильнее растут молодые.</p>
+    </section>`;
+}
+
+function offseason() {
+  const me = humanTeam(season);
+  const h = season.history[0];
+  const exp = roster(me).filter((p) => season.expiring.includes(p.id));
+  shell('home', `
+    <section class="marquee"><div class="when">Сезон ${h.season} окончен</div><p class="big">${h.place}-е место</p>
+      ${h.titles.length ? `<div class="trophies">${h.titles.map((t) => `<span>${ICON.star(16)} ${esc(t)}</span>`).join('')}</div>` : ''}
+      <button class="cta" id="next">Начать сезон ${season.seasonNo + 1}</button></section>
+    <section class="block"><h3>Межсезонье</h3><p class="dim small">Игроки стали на год старше: молодые выросли, ветераны начали сдавать. Сейчас лучшее время для трансферов.</p>
+      ${exp.length ? `<h3>Истекают контракты</h3><p class="dim small">Если не продлить, игрок уйдёт в начале сезона.</p>${exp.map((p) => playerRow(p, `<em class="warn">продлить</em>`)).join('')}` : '<p class="dim small">Все контракты в порядке.</p>'}
+    </section>
+    ${logCard()}`);
+  on('[data-p]', (el) => talk(findPlayer(el.dataset.p!), 'renew', offseason));
+  document.getElementById('next')!.onclick = () => {
+    startNextSeason(season);
+    home();
+  };
+}
+
 function home() {
+  if (season.finished) return offseason();
   const me = humanTeam(season);
   const fx = humanFixture(season);
-  if (season.finished || !fx) {
-    const place = standings(season).findIndex((x) => x.team.human) + 1;
-    shell('home', `
-      <section class="marquee"><h2>Сезон окончен</h2><p class="big">${place}-е место</p>
-      <button class="cta" id="newgame">Новый сезон</button></section>${logCard()}`);
-    document.getElementById('newgame')!.onclick = () => {
-      clearSave();
-      season = newSeason();
-      save(season);
-      home();
-    };
-    return;
-  }
-  const opp = teamById(season, fx.home === me.id ? fx.away : fx.home);
-  const trained = trainedWeek === season.week;
-  shell('home', `
-    <section class="marquee">
-      <div class="when">Неделя ${season.week} · матч лиги</div>
+  const trained = season.trained === season.week;
+  const sponsorNote = !season.sponsor
+    ? `<button class="block patch-card fresh" id="sp"><div class="pc-top">${ICON.coin(18)}<b>Выберите спонсора</b></div><span class="dim small">Без спонсора клуб теряет доход каждую неделю</span></button>`
+    : '';
+  let top: string;
+  if (fx) {
+    const opp = teamById(season, fx.home === me.id ? fx.away : fx.home);
+    top = `<section class="marquee">
+      <div class="when">${season.week <= LEAGUE_WEEKS ? `Неделя ${season.week}` : 'Решающий матч'} · ${STAGE_NAMES[fx.stage]}</div>
       <div class="vs">
         <div class="side">${crest(me.color, me.tag, 64)}<b>${esc(me.tag)}</b><small>${record(me)}</small></div>
         <span class="v">VS</span>
         <div class="side">${crest(opp.color, opp.tag, 64)}<b>${esc(opp.tag)}</b><small>${record(opp)}</small></div>
       </div>
-      <div class="opp">${esc(opp.name)}</div>
+      <div class="opp">${esc(opp.name)}${opp.foreign ? ' · зарубежный клуб' : ''}</div>
       <button class="cta" id="play" ${trained ? '' : 'disabled'}>${trained ? 'На драфт' : 'Сначала проведите тренировку'}</button>
-    </section>
-    ${patchCard()}
-    <section class="block">
-      <h3>Тренировка недели</h3>
-      <div class="train">${(Object.keys(TRAINING_NAMES) as Training[])
-        .map((t) => `<button class="opt" data-train="${t}" ${trained ? 'disabled' : ''}>${TRAIN_ICON[t]}<span>${TRAINING_NAMES[t]}</span></button>`)
-        .join('')}</div>
-    </section>
-    ${logCard()}`);
-  app.querySelectorAll<HTMLButtonElement>('[data-train]').forEach(
-    (b) =>
-      (b.onclick = () => {
-        applyTraining(season, b.dataset.train as Training);
-        trainedWeek = season.week;
-        save(season);
-        home();
-      }),
-  );
-  document.getElementById('play')!.onclick = () => trained && draft();
+    </section>`;
+  } else {
+    top = `<section class="marquee"><div class="when">${season.week <= LEAGUE_WEEKS + 2 ? 'Плей-офф' : 'Кубок мира'}</div>
+      <p>Ваша команда на этой неделе не играет. Можно потренироваться, заняться трансферами и посмотреть матчи других.</p>
+      <button class="cta" id="skipweek">Завершить неделю</button></section>`;
+  }
+  shell('home', `${top}${sponsorNote}${patchCard()}${trainingBlock(trained)}${logCard()}`);
+  on('[data-train]', (b) => {
+    applyTraining(season, b.dataset.train as Training);
+    save(season);
+    home();
+  });
+  const play = document.getElementById('play');
+  if (play) play.onclick = () => trained && draft();
+  const sk = document.getElementById('skipweek');
+  if (sk)
+    sk.onclick = () => {
+      finishWeek(season);
+      home();
+    };
+  const sp = document.getElementById('sp');
+  if (sp) sp.onclick = () => club();
   document.getElementById('patch')!.onclick = () => metaScreen();
 }
 
@@ -142,31 +267,173 @@ function patchCard() {
 
 function logCard() {
   return `<section class="block"><h3>Новости</h3><ul class="log">${season.log
-    .slice(0, 5)
+    .slice(0, 6)
     .map((l) => `<li>${esc(l)}</li>`)
     .join('')}</ul></section>`;
 }
 
-// ---------- Состав и таблица ----------
+// ---------- Состав ----------
 
 function statBar(label: string, v: number) {
   return `<div class="stat"><span>${label}</span><i><b style="--v:${v}%"></b></i><em>${r1(v)}</em></div>`;
 }
 
-function roster() {
+function rosterScreen() {
   const me = humanTeam(season);
-  shell('roster', me.players
-    .map((p) => {
-      const best = [...ALL_ROLES].sort((a, b) => p.pool[b] - p.pool[a]).slice(0, 2);
-      return `<section class="block player">
-        <div class="row"><b>${esc(p.nick)}</b><span class="pos">${POS_NAMES[p.pos]}</span></div>
-        <div class="dim small">Зарплата ${p.salary} в неделю · лучше всего: ${POS_ROLES[p.pos].map((r) => ROLE_NAMES[r]).join(', ')}</div>
-        ${statBar('Атака', p.atk)}${statBar('Защита', p.def)}${statBar('Тактика', p.iq)}${statBar('Форма', p.form)}
-        <div class="roles">${best.map((r) => `<span class="chip">${ROLE_NAMES[r]} ${p.pool[r]}</span>`).join('')}</div>
-      </section>`;
-    })
-    .join(''));
+  const chem = chemistry(me);
+  const wage = roster(me).reduce((a, p) => a + p.salary, 0);
+  shell('roster', `
+    <section class="block">
+      <div class="row"><h3>Стартовая пятёрка</h3><span class="dim small">сыгранность ${Math.round(chem * 100)}%</span></div>
+      <div class="chem"><i style="--v:${Math.round(chem * 100)}%"></i></div>
+      ${me.players.map((p) => playerRow(p, `<em class="dim small">${p.contract <= 1 ? 'последний сезон' : ''}</em>`)).join('')}
+    </section>
+    <section class="block">
+      <div class="row"><h3>Запас</h3><span class="dim small">${roster(me).length}/${ROSTER_MAX} игроков</span></div>
+      ${me.bench.length ? me.bench.map((p) => playerRow(p)).join('') : '<p class="dim small">Запасных нет. Игроков можно купить на рынке или перевести из академии.</p>'}
+    </section>
+    <p class="dim small center">Зарплаты состава: ${wage} в неделю. Нажмите на игрока, чтобы заменить, продать или продлить контракт.</p>`);
+  on('[data-p]', (el) => playerSheet(findPlayer(el.dataset.p!)));
 }
+
+function playerSheet(p: Player) {
+  const me = humanTeam(season);
+  const starter = me.players.includes(p);
+  const swapWith = starter ? me.bench : me.players;
+  const s = sheet(`${playerInfo(p)}
+    <div class="acts">
+      ${swapWith.length ? `<h3>${starter ? 'Посадить в запас вместо' : 'Выпустить в составе вместо'}</h3>
+        ${swapWith.map((q) => `<button class="chip" data-sw="${q.id}">${POS_NAMES[q.pos]} · ${esc(q.nick)}</button>`).join(' ')}` : ''}
+      <div class="acts-row">
+        ${p.contract <= 1 ? '<button class="opt sm" id="renew">Продлить контракт</button>' : ''}
+        <button class="opt sm" id="sell">Продать за ${sellPrice(p).toLocaleString('ru')}</button>
+        <button class="opt sm" id="rel">Расторгнуть (неустойка ${(p.salary * 4).toLocaleString('ru')})</button>
+      </div>
+    </div>`, rosterScreen);
+  s.el.querySelectorAll<HTMLButtonElement>('[data-sw]').forEach(
+    (b) =>
+      (b.onclick = () => {
+        const q = findPlayer(b.dataset.sw!);
+        if (starter) swapStarter(season, p, q);
+        else swapStarter(season, q, p);
+        s.close();
+      }),
+  );
+  const rn = s.el.querySelector<HTMLButtonElement>('#renew');
+  if (rn) rn.onclick = () => talk(p, 'renew', rosterScreen);
+  s.el.querySelector<HTMLButtonElement>('#sell')!.onclick = () => {
+    toast(sell(season, p));
+    s.close();
+  };
+  s.el.querySelector<HTMLButtonElement>('#rel')!.onclick = () => {
+    toast(release(season, p));
+    s.close();
+  };
+}
+
+// ---------- Рынок ----------
+
+let marketTab: 'free' | 'clubs' = 'free';
+let marketPos: Pos | -1 = -1;
+
+function market() {
+  const me = humanTeam(season);
+  const list =
+    marketTab === 'free'
+      ? season.market
+      : season.teams.filter((t) => !t.human && !t.foreign).flatMap((t) => t.players);
+  const shown = list.filter((p) => marketPos === -1 || p.pos === marketPos).sort((a, b) => ovr(b) - ovr(a));
+  shell('market', `
+    <section class="block">
+      <div class="seg">${(['free', 'clubs'] as const).map((k) => `<button class="chip ${marketTab === k ? 'on' : ''}" data-mt="${k}">${k === 'free' ? 'Свободные агенты' : 'Игроки клубов'}</button>`).join('')}</div>
+      <div class="seg">${[-1, 0, 1, 2, 3, 4].map((i) => `<button class="chip ${marketPos === i ? 'on' : ''}" data-mp="${i}">${i < 0 ? 'Все' : POS_NAMES[i]}</button>`).join('')}</div>
+      <p class="dim small">${marketTab === 'free' ? 'Свободным агентам нужны только подъёмные. Список обновляется каждую неделю.' : 'Клуб отпустит игрока за трансферную сумму.'} В составе ${roster(me).length}/${ROSTER_MAX}.</p>
+    </section>
+    <section class="block">${shown
+      .map((p) => {
+        const t = owner(season, p);
+        const price = marketTab === 'free' ? signingBonus(p) : transferFee(p);
+        return playerRow(p, `<em class="price">${t ? `<small>${esc(t.tag)}</small>` : ''}${price.toLocaleString('ru')}</em>`);
+      })
+      .join('') || '<p class="dim small">Никого нет.</p>'}</section>`);
+  on('[data-mt]', (b) => ((marketTab = b.dataset.mt as 'free' | 'clubs'), market()));
+  on('[data-mp]', (b) => ((marketPos = +b.dataset.mp! as Pos | -1), market()));
+  on('[data-p]', (el) => {
+    const p = findPlayer(el.dataset.p!);
+    talk(p, owner(season, p) ? 'buy' : 'sign', market);
+  });
+}
+
+// ---------- Клуб: спонсоры, персонал, академия, повторы, история ----------
+
+function club() {
+  const sp = season.sponsor;
+  const staff = (Object.keys(STAFF_INFO) as StaffRole[])
+    .map((r) => {
+      const l = season.staff[r];
+      return `<div class="staff">
+        <div><b>${STAFF_INFO[r].name}</b><small>${l ? `уровень ${l} · ${staffSalary(l)} в неделю` : 'не нанят'}</small>
+        <ul>${STAFF_INFO[r].text.map((t) => `<li>${t}</li>`).join('')}</ul></div>
+        ${l < STAFF_MAX ? `<button class="chip on" data-hire="${r}">${l ? 'Повысить' : 'Нанять'} · ${staffCost(l + 1).toLocaleString('ru')}</button>` : '<span class="dim small">максимум</span>'}
+      </div>`;
+    })
+    .join('');
+  const acad = !season.academyOpen
+    ? `<p class="dim small">Академия растит молодых игроков 15–17 лет с высоким потенциалом. Каждый сезон приходят новые. Открытие ${ACADEMY_COST.toLocaleString('ru')}, содержание ${ACADEMY_WEEKLY} в неделю.</p>
+       <button class="cta wide" id="acad">Открыть академию</button>`
+    : season.academy.length
+      ? season.academy.map((p) => playerRow(p, `<em class="dim small">потенциал ${potentialText(season, p)}</em>`)).join('')
+      : '<p class="dim small">Пока пусто: новые таланты придут в начале сезона.</p>';
+  shell('club', `
+    <section class="block"><h3>Спонсор и болельщики</h3>
+      <div class="row"><span>Болельщиков</span><b>${season.fans.toLocaleString('ru')}</b></div>
+      <p class="dim small">Победы и трофеи приводят новых болельщиков. Каждую неделю с матчем клуб получает за билеты ${Math.round(season.fans * 0.6).toLocaleString('ru')}.</p>
+      ${sp
+        ? `<div class="sponsor on"><b>${esc(sp.name)}</b><small>${sponsorText(sp)}</small></div>`
+        : `<p class="warn small">Выберите спонсора на сезон:</p>${season.offers.map((o) => `<button class="sponsor" data-sp="${o.id}"><b>${esc(o.name)}</b><small>${sponsorText(o)}</small></button>`).join('')}`}
+    </section>
+    <section class="block"><h3>Персонал</h3>${staff}</section>
+    <section class="block"><h3>Академия</h3>${acad}</section>
+    <section class="block"><h3>Повторы матчей</h3>${season.replays.length
+      ? season.replays.map((r) => `<button class="prow" data-r="${r.id}"><span class="posl">${ICON.play(14)}</span><div class="pmain"><b>${esc(r.label)}</b></div></button>`).join('')
+      : '<p class="dim small">Здесь появятся ваши последние матчи.</p>'}</section>
+    <section class="block"><h3>История клуба</h3>${season.history.length
+      ? season.history.map((h) => `<div class="row"><span>Сезон ${h.season}</span><span>${h.place}-е место${h.titles.length ? ' · ' + h.titles.length + ' ' + ICON.star(14) : ''}</span></div>`).join('')
+      : '<p class="dim small">Первый сезон клуба ещё идёт.</p>'}</section>`);
+  on('[data-sp]', (b) => {
+    chooseSponsor(season, season.offers.find((o) => o.id === b.dataset.sp)!);
+    club();
+  });
+  on('[data-hire]', (b) => {
+    const err = hireStaff(season, b.dataset.hire as StaffRole);
+    if (err) toast(err);
+    club();
+  });
+  const ac = document.getElementById('acad');
+  if (ac)
+    ac.onclick = () => {
+      const err = openAcademy(season);
+      if (err) toast(err);
+      club();
+    };
+  on('[data-p]', (el) => prospectSheet(findPlayer(el.dataset.p!)));
+  on('[data-r]', (el) => {
+    const r = season.replays.find((x) => x.id === el.dataset.r)!;
+    playMatch(new Match(JSON.parse(JSON.stringify(r.setup))), 'replay');
+  });
+}
+
+function prospectSheet(p: Player) {
+  const s = sheet(`${playerInfo(p)}<div class="acts-row">
+    <button class="opt sm" id="promo">Перевести в основу</button><button class="opt sm" id="drop">Отчислить</button></div>`, club);
+  s.el.querySelector<HTMLButtonElement>('#promo')!.onclick = () => talk(p, 'promote', club);
+  s.el.querySelector<HTMLButtonElement>('#drop')!.onclick = () => {
+    dropProspect(season, p);
+    s.close();
+  };
+}
+
+// ---------- Таблица и сетка ----------
 
 function table() {
   const rows = standings(season)
@@ -175,7 +442,23 @@ function table() {
       <td>${s.wins}</td><td>${s.losses}</td><td>${s.kd > 0 ? '+' : ''}${s.kd}</td></tr>`,
     )
     .join('');
-  shell('table', `<section class="block"><table class="tbl"><thead><tr><th>#</th><th>Команда</th><th>П</th><th>Пр</th><th>±</th></tr></thead><tbody>${rows}</tbody></table></section>`);
+  const tie = (f: Fixture) => {
+    const a = teamById(season, f.home);
+    const b = teamById(season, f.away);
+    const w = f.result?.winner;
+    const side = (t: Team) => `<div class="bt ${w === t.id ? 'win' : w ? 'lose' : ''} ${t.human ? 'me' : ''}">${crest(t.color, t.tag, 18)}<span>${esc(t.name)}</span></div>`;
+    return `<div class="tie">${side(a)}${side(b)}</div>`;
+  };
+  const stage = (st: Stage, name: string) => {
+    const fs = season.fixtures.filter((f) => f.stage === st);
+    return fs.length ? `<div class="round"><small>${name}</small>${fs.map(tie).join('')}</div>` : '';
+  };
+  const po = stage('semi', 'Полуфиналы') + stage('final', 'Финал');
+  const intl = stage('intl-semi', 'Полуфиналы') + stage('intl-final', 'Финал');
+  shell('table', `<section class="block"><h3>Лига · сезон ${season.seasonNo}</h3><table class="tbl"><thead><tr><th>#</th><th>Команда</th><th>П</th><th>Пр</th><th>±</th></tr></thead><tbody>${rows}</tbody></table>
+    <p class="dim small">После ${LEAGUE_WEEKS} недель четыре лучших выходят в плей-офф. Чемпион едет на Кубок мира против зарубежных клубов.</p></section>
+    ${po ? `<section class="block"><h3>Плей-офф</h3><div class="bracket">${po}</div></section>` : ''}
+    ${intl ? `<section class="block"><h3>Кубок мира</h3><div class="bracket">${intl}</div></section>` : ''}`);
 }
 
 // ---------- Мета и патчи ----------
@@ -260,10 +543,12 @@ function draft() {
   const bestFor = (c: Champion) => Math.max(...me.players.map((p) => p.pool[c.role]));
   const meta = season.meta;
   const noteOf = (c: Champion) => meta.patch.notes.find((n) => n.id === c.id);
+  const favOf = (c: Champion) => me.players.find((p) => p.favs.includes(c.id));
+  let tip: string | null = null; // совет тренера по драфту
   const badge = (c: Champion) => {
     const n = noteOf(c);
     const t = tier(meta, c.id);
-    return `${t === 'S' ? '<i class="tier-s">S</i>' : ''}${n ? `<i class="pb ${n.kind}">${n.kind === 'buff' ? '▲' : '▼'}</i>` : ''}`;
+    return `${t === 'S' ? '<i class="tier-s">S</i>' : ''}${n ? `<i class="pb ${n.kind}">${n.kind === 'buff' ? '▲' : '▼'}</i>` : ''}${favOf(c) ? '<i class="fav">♥</i>' : ''}${tip === c.id ? '<i class="tipl">совет</i>' : ''}`;
   };
 
   const slots = (side: 0 | 1) => {
@@ -323,13 +608,13 @@ function draft() {
           .map((c) => {
             const gone = tk.has(c.id);
             const by = d.picks[0].includes(c.id) ? 'p0' : d.picks[1].includes(c.id) ? 'p1' : gone ? 'bn' : '';
-            return `<button class="hero-btn ${by} ${sel === c.id ? 'on' : ''} ${aiHover === c.id ? 'ai' : ''}" data-c="${c.id}" ${gone || !myTurn ? 'disabled' : ''} aria-label="${c.name}">
+            return `<button class="hero-btn ${by} ${tip === c.id && myTurn ? 'tip' : ''} ${sel === c.id ? 'on' : ''} ${aiHover === c.id ? 'ai' : ''}" data-c="${c.id}" ${gone || !myTurn ? 'disabled' : ''} aria-label="${c.name}">
               ${img(c, gone ? 'gone' : '')}${gone ? (by === 'bn' ? `<i class="took">${ICON.ban(14)}</i>` : '') : badge(c)}<span>${c.name}</span></button>`;
           })
           .join('')}</div>
         <div class="pick-bar">${
           selC && myTurn
-            ? `<div class="info">${img(selC)}<div><b>${selC.name}</b><small>${ROLE_NAMES[selC.role]} · владение ${bestFor(selC)} · тир ${tier(meta, selC.id)}</small><small>${noteOf(selC) ? `<span class="${noteOf(selC)!.kind === 'buff' ? 'up' : 'down'}">Патч ${meta.patch.ver}: ${noteOf(selC)!.text.split(': ')[1]}</span>` : ABILITY_TEXT[selC.ab]}</small></div></div>
+            ? `<div class="info">${img(selC)}<div><b>${selC.name}</b><small>${ROLE_NAMES[selC.role]} · владение ${bestFor(selC)} · тир ${tier(meta, selC.id)}${favOf(selC) ? ` · ♥ ${esc(favOf(selC)!.nick)}` : ''}</small><small>${noteOf(selC) ? `<span class="${noteOf(selC)!.kind === 'buff' ? 'up' : 'down'}">Патч ${meta.patch.ver}: ${noteOf(selC)!.text.split(': ')[1]}</span>` : ABILITY_TEXT[selC.ab]}</small></div></div>
                <button class="cta ${st.act}" id="lock">${st.act === 'ban' ? 'Забанить' : 'Выбрать'}</button>`
             : `<div class="hint">${myTurn ? (st.act === 'ban' ? 'Выберите героя, которого уберёте у соперника' : 'Выберите героя для своей команды') : st ? `${esc(teams[st.side].name)} думают…` : ''}</div>`
         }</div>
@@ -363,6 +648,7 @@ function draft() {
     const st = ORDER[d.step];
     if (st.side === mySide) {
       left = HUMAN_TIME;
+      tip = season.staff.coach > 0 ? aiChoice(d, me, opp, new Rng(season.seed + d.step * 61 + season.week), meta) : null;
       render();
       timer = window.setInterval(() => {
         left -= 0.25;
@@ -403,7 +689,7 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
           const onPos = POS_ROLES[p.pos].includes(c.role);
           return `<button class="lane ${first === i ? 'on' : ''}" data-i="${i}">
             <span class="posl">${POS_NAMES[p.pos]}</span>
-            ${img(c)}<div><b>${esc(p.nick)}</b><small>${c.name} · ${ROLE_NAMES[c.role]}${onPos ? '' : ' · <i class="warn">не его позиция</i>'}</small></div>
+            ${img(c)}<div><b>${esc(p.nick)}</b><small>${c.name} · ${ROLE_NAMES[c.role]}${p.favs.includes(c.id) ? ' · ♥ любимый' : ''}${onPos ? '' : ' · <i class="warn">не его позиция</i>'}</small></div>
             <em class="${p.pool[c.role] >= 70 ? 'good' : p.pool[c.role] < 45 ? 'bad' : ''}">${p.pool[c.role]}</em></button>`;
         })
         .join('')}</div>
@@ -428,7 +714,7 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
     document.getElementById('go')!.onclick = () => {
       const p: [string[], string[]] = mySide === 0 ? [mine, theirs] : [theirs, mine];
       const st: [Strategy, Strategy] = mySide === 0 ? [strat, foeStrat] : [foeStrat, strat];
-      playMatch(new Match({ teams, picks: p, strategies: st, seed: season.seed + season.week * 977, patch: season.meta.patch }));
+      playMatch(new Match(matchSetup(season, teams, p, season.seed + season.week * 977 + season.seasonNo * 13, { strategies: st })), 'live');
     };
   };
   render();
@@ -436,7 +722,7 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
 
 // ---------- Матч ----------
 
-function playMatch(m: Match) {
+function playMatch(m: Match, mode: 'live' | 'replay') {
   const [a, b] = m.setup.teams;
   swap(`<div class="screen match">
     <div class="bug">
@@ -450,7 +736,7 @@ function playMatch(m: Match) {
       <button data-speed="1" class="on" aria-label="Скорость 1">${ICON.play(18)}<span>1×</span></button>
       <button data-speed="2" aria-label="Скорость 2">${ICON.fast(18)}<span>2×</span></button>
       <button data-speed="4" aria-label="Скорость 4">${ICON.fast(18)}<span>4×</span></button>
-      <button id="skip" aria-label="К итогам">${ICON.skip(18)}<span>Итог</span></button>
+      <button id="skip" aria-label="К итогам">${ICON.skip(18)}<span>${mode === 'replay' ? 'Выход' : 'Итог'}</span></button>
     </div></div>`);
   const cv = document.getElementById('cv') as HTMLCanvasElement;
   const ctx = cv.getContext('2d')!;
@@ -549,7 +835,11 @@ function playMatch(m: Match) {
     m.s.fx = [];
     drawMatch(ctx, m, cv.width, cv.height, dpr);
     hud();
-    result(m);
+    if (mode === 'live') result(m);
+    else {
+      const s = sheet(`<h2>Повтор</h2>${statsHtml(m)}<button class="cta wide" id="cont">Закрыть</button>`, club);
+      s.el.querySelector<HTMLButtonElement>('#cont')!.onclick = s.close;
+    }
   };
 
   app.querySelectorAll<HTMLButtonElement>('[data-speed]').forEach(
@@ -562,31 +852,54 @@ function playMatch(m: Match) {
   document.getElementById('skip')!.onclick = end;
 }
 
+// Подробная статистика: K/D/A, золото, урон, лечение и график золота
+function statsHtml(m: Match) {
+  const s = m.s;
+  const score = (u: (typeof s.units)[0]) => u.kills * 3 + u.assists * 1.5 - u.deaths + u.heroDmg / 1500 + u.towerDmg / 2500 + u.healed / 800;
+  const mvp = [...s.units].sort((x, y) => score(y) - score(x))[0];
+  const k = (n: number) => (n >= 1000 ? (r1(n / 100) / 10).toFixed(1) + 'к' : String(r1(n)));
+  const rows = (side: 0 | 1) =>
+    s.units
+      .filter((u) => u.side === side)
+      .map(
+        (u) => `<tr class="${u === mvp ? 'mvp' : ''}"><td class="tm"><span class="dot" style="background:${SIDE_COLORS[u.side]}"></span>${img(u.champ, 'xs')}<span class="nk">${esc(u.player.nick)}</span></td>
+        <td>${u.kills}/${u.deaths}/${u.assists}</td><td>${k(u.gold)}</td><td>${k(u.heroDmg)}</td><td>${k(u.towerDmg)}</td><td>${u.healed ? k(u.healed) : '–'}</td></tr>`,
+      )
+      .join('');
+  const tot = (side: 0 | 1) => s.units.filter((u) => u.side === side).reduce((a, u) => a + u.gold, 0);
+  // график разницы золота
+  const line = s.goldLine;
+  const max = Math.max(500, ...line.map(Math.abs));
+  const W = 300;
+  const H = 70;
+  const pts = line.map((v, i) => `${((i / Math.max(1, line.length - 1)) * W).toFixed(1)},${(H / 2 - (v / max) * (H / 2 - 4)).toFixed(1)}`).join(' ');
+  const [a, b] = m.setup.teams;
+  return `<p class="dim">${s.cores[0].hp <= 0 || s.cores[1].hp <= 0 ? 'Ядро разрушено' : 'По истечении времени'} · убийства ${s.kills[0]} : ${s.kills[1]} · башни ${s.towersDown[0]} : ${s.towersDown[1]} · объекты ${s.objectives[0]} : ${s.objectives[1]}</p>
+    <div class="mvp-card">${img(mvp.champ)}<div><small>Лучший игрок матча</small><b>${esc(mvp.player.nick)}</b><span>${mvp.champ.name} · ${mvp.kills}/${mvp.deaths}/${mvp.assists}</span></div></div>
+    <div class="gold"><div class="row"><small style="color:${SIDE_COLORS[0]}">${esc(a.tag)} ${k(tot(0))}</small><small class="dim">разница золота</small><small style="color:${SIDE_COLORS[1]}">${k(tot(1))} ${esc(b.tag)}</small></div>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><line x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" class="zero"/><polyline points="${pts}" class="gl"/></svg></div>
+    <div class="tbl-wrap"><table class="tbl stats"><thead><tr><th>Игрок</th><th>У/С/П</th><th>Зол.</th><th>Герои</th><th>Строен.</th><th>Леч.</th></tr></thead>
+    <tbody>${rows(0)}<tr class="gap"><td colspan="6"></td></tr>${rows(1)}</tbody></table></div>`;
+}
+
 function result(m: Match) {
   const me = humanTeam(season);
   const s = m.s;
   const winner = m.setup.teams[s.winner as 0 | 1];
   const won = winner.id === me.id;
-  const score = (u: (typeof s.units)[0]) => u.kills * 3 - u.deaths + u.dealt / 1500 + u.healed / 800;
-  const mvp = [...s.units].sort((x, y) => score(y) - score(x))[0];
-  const rows = s.units
-    .map(
-      (u) => `<tr class="${u === mvp ? 'mvp' : ''}"><td class="tm"><span class="dot" style="background:${SIDE_COLORS[u.side]}"></span>${img(u.champ, 'xs')}${esc(u.player.nick)}</td>
-      <td>${u.kills}/${u.deaths}</td><td>${(r1(u.dealt / 100) / 10).toFixed(1)}к</td><td>${u.healed ? (r1(u.healed / 100) / 10).toFixed(1) + 'к' : '–'}</td></tr>`,
-    )
-    .join('');
+  const fx = humanFixture(season)!;
+  const opp = m.setup.teams.find((t) => t.id !== me.id)!;
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
   overlay.innerHTML = `<div class="sheet">
     <h2 class="${won ? 'win' : 'lose'}">${won ? 'Победа' : 'Поражение'}</h2>
-    <p class="dim">${s.cores[0].hp <= 0 || s.cores[1].hp <= 0 ? 'Ядро разрушено' : 'По истечении времени'} · убийства ${s.kills[0]} : ${s.kills[1]} · башни ${s.towersDown[0]} : ${s.towersDown[1]}</p>
-    <div class="mvp-card">${img(mvp.champ)}<div><small>Лучший игрок матча</small><b>${esc(mvp.player.nick)}</b><span>${mvp.champ.name} · ${mvp.kills}/${mvp.deaths}</span></div></div>
-    <table class="tbl"><thead><tr><th>Игрок</th><th>У/С</th><th>Урон</th><th>Леч.</th></tr></thead><tbody>${rows}</tbody></table>
+    ${statsHtml(m)}
     <button class="cta wide" id="cont">Дальше</button></div>`;
   app.appendChild(overlay);
   document.getElementById('cont')!.onclick = () => {
     const order = lastDraft?.order;
     const bans: [string[], string[]] = lastDraft ? lastDraft.bans : [[], []];
+    saveReplay(season, `С${season.seasonNo}, ${STAGE_NAMES[fx.stage]}: ${won ? 'победа' : 'поражение'} против ${opp.tag} ${s.kills[0]}:${s.kills[1]}`, m.setup);
     finishWeek(season, { winner: winner.id, kills: [s.kills[0], s.kills[1]] }, matchRecord(m, bans, order));
     lastDraft = null;
     home();

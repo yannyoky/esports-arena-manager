@@ -127,24 +127,36 @@ export interface Player {
   form: number;
   pool: Record<Role, number>;
   salary: number;
+  age: number;
+  potential: number; // потолок среднего навыка
+  morale: number; // 0–100: настроение, влияет на игру
+  fatigue: number; // 0–100: усталость, снижает силу
+  contract: number; // сколько сезонов осталось по контракту (включая текущий)
+  together: number; // недель в этой команде: из этого растёт химия
+  favs: string[]; // любимые герои: на них игрок сильнее
 }
+
+export const ovr = (p: Player) => (p.atk + p.def + p.iq) / 3;
 
 export interface Team {
   id: string;
   name: string;
   tag: string;
   color: string;
-  players: Player[];
+  players: Player[]; // стартовая пятёрка, по позициям
+  bench: Player[]; // запасные
   human: boolean;
+  foreign?: boolean; // зарубежный клуб, только на международном турнире
 }
 
 const NICK_A = ['Нова', 'Рекс', 'Зефир', 'Кайто', 'Флин', 'Мира', 'Орбит', 'Пиксель', 'Сайфер', 'Тор', 'Ульф', 'Вега', 'Гекс', 'Дрейк', 'Эхо', 'Йоль', 'Квант', 'Люкс', 'Неон', 'Опал', 'Призм', 'Руна', 'Синк', 'Тайга', 'Фокс', 'Хаки', 'Цирк', 'Шторм', 'Юки', 'Ярс', 'Бриз', 'Вольт', 'Глинт', 'Дюна', 'Жук', 'Зоркий'];
-const NICK_B = ['', '', '', 'X', '7', 'Pro', 'Jr', 'One', '99', 'Z'];
+const NICK_B = ['', '', '', 'X', '7', 'Pro', 'Jr', 'One', '99', 'Z', 'Ace', 'GG', '2', 'Max', 'Kid', 'Neo'];
 
-export function makePlayer(rng: Rng, level: number, used: Set<string>, pos: Pos = rng.int(0, 4) as Pos): Player {
+export function makePlayer(rng: Rng, level: number, used: Set<string>, pos: Pos = rng.int(0, 4) as Pos, age = rng.int(18, 28)): Player {
   let nick = '';
+  let tries = 0;
   do nick = rng.pick(NICK_A) + rng.pick(NICK_B);
-  while (used.has(nick));
+  while (used.has(nick) && ++tries < 40);
   used.add(nick);
   const stat = () => Math.round(Math.max(20, Math.min(95, level + rng.range(-14, 14))));
   const pool = {} as Record<Role, number>;
@@ -152,8 +164,21 @@ export function makePlayer(rng: Rng, level: number, used: Set<string>, pos: Pos 
   const [main, second] = POS_ROLES[pos];
   pool[main] = Math.round(rng.range(70, 95));
   if (second) pool[second] = Math.round(rng.range(50, 80));
-  const p: Player = { id: 'p' + Math.floor(rng.next() * 1e9).toString(36), nick, pos, atk: stat(), def: stat(), iq: stat(), form: 85, pool, salary: 0 };
-  p.salary = Math.round((p.atk + p.def + p.iq) / 3) * 10;
+  // любимые герои — из ролей своей позиции
+  const mine = CHAMPIONS.filter((c) => POS_ROLES[pos].includes(c.role));
+  const favs: string[] = [];
+  while (favs.length < 2) {
+    const c = rng.pick(mine);
+    if (!favs.includes(c.id)) favs.push(c.id);
+  }
+  const p: Player = {
+    id: 'p' + Math.floor(rng.next() * 1e9).toString(36), nick, pos, atk: stat(), def: stat(), iq: stat(), form: 85, pool, salary: 0,
+    age, potential: 0, morale: 70, fatigue: 0, contract: rng.int(1, 3), together: rng.int(0, 20), favs,
+  };
+  const o = ovr(p);
+  // молодые растут сильнее, ветераны уже у потолка
+  p.potential = Math.min(97, Math.round(o + (age < 21 ? rng.range(12, 30) : age < 24 ? rng.range(5, 16) : rng.range(0, 6))));
+  p.salary = askSalary(p);
   return p;
 }
 
@@ -166,6 +191,20 @@ const TEAM_DEFS = [
   { name: 'Белые Совы', tag: 'БСВ', color: '#e8e4da' },
 ];
 
+// Сколько игрок хочет получать в неделю
+export function askSalary(p: Player) {
+  const o = ovr(p);
+  return Math.round((o * 10 * (1 + Math.max(0, o - 55) / 45)) / 10) * 10;
+}
+
+// Рыночная стоимость: сила, возраст и потенциал
+export function value(p: Player) {
+  const o = ovr(p);
+  const ageK = p.age < 21 ? 1.35 : p.age < 25 ? 1.15 : p.age < 28 ? 1 : 0.7;
+  const potK = 1 + Math.max(0, p.potential - o) / 60;
+  return Math.round((Math.max(5, o - 30) ** 2 * 12 * ageK * potK) / 100) * 100;
+}
+
 export function makeTeams(rng: Rng): Team[] {
   const used = new Set<string>();
   return TEAM_DEFS.map((d, i) => ({
@@ -174,6 +213,7 @@ export function makeTeams(rng: Rng): Team[] {
     tag: d.tag,
     color: d.color,
     human: i === 0,
+    bench: [],
     players: ([0, 3, 1, 2, 4] as Pos[]).map((pos) => makePlayer(rng, i === 0 ? 52 : 46 + rng.range(0, 16), used, pos)),
   }));
 }

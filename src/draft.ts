@@ -43,7 +43,7 @@ export function apply(d: DraftState, id: string) {
 }
 
 // Насколько команда сильна на герое: лучший игрок этой роли
-const teamFit = (team: Team, c: Champion) => Math.max(...team.players.map((p) => p.pool[c.role]));
+const teamFit = (team: Team, c: Champion) => Math.max(...team.players.map((p) => p.pool[c.role] + (p.favs?.includes(c.id) ? 12 : 0)));
 
 // Роли, нужные позициям команды, которые ещё не закрыты героями
 const missingRoles = (team: Team, picks: string[]) => {
@@ -89,7 +89,7 @@ export function assign(team: Team, picks: string[]): string[] {
       const s = arr.reduce((acc, ci, pi) => {
         const pl = team.players[pi];
         const fit = POS_ROLES[pl.pos].includes(champs[ci].role) ? 25 : 0;
-        return acc + pl.pool[champs[ci].role] + fit;
+        return acc + pl.pool[champs[ci].role] + fit + (pl.favs?.includes(champs[ci].id) ? 12 : 0);
       }, 0);
       if (s > bestScore) {
         bestScore = s;
