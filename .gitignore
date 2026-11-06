@@ -1,2 +1,6 @@
 node_modules/
 dist/
+
+# Impeccable design skill: per-developer config and build output
+.impeccable/config.local.json
+.impeccable/build/
