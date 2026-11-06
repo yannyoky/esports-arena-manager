@@ -16,6 +16,8 @@ export const ICON = {
   skip: (s?: number) => svg('<path d="M5 6v12l9-6z" fill="currentColor"/><path d="M18 6v12"/>', s),
   ban: (s?: number) => svg('<circle cx="12" cy="12" r="8"/><path d="m6.5 6.5 11 11"/>', s),
   swap: (s?: number) => svg('<path d="M7 4 3 8l4 4"/><path d="M3 8h14"/><path d="m17 20 4-4-4-4"/><path d="M21 16H7"/>', s),
+  tower: (s?: number) => svg('<path d="M7 21V9l-1-5h3v2h2V4h2v2h2V4h3l-1 5v12z"/><path d="M10 21v-4h4v4"/>', s),
+  star: (s?: number) => svg('<path d="m12 3 2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/>', s),
   skull: (s?: number) => svg('<path d="M12 3a7 7 0 0 0-7 7c0 2.4 1.2 4.1 3 5.2V19h8v-3.8c1.8-1.1 3-2.8 3-5.2a7 7 0 0 0-7-7z"/><circle cx="9.5" cy="11" r="1.4" fill="currentColor"/><circle cx="14.5" cy="11" r="1.4" fill="currentColor"/>', s),
 };
 

@@ -105,9 +105,22 @@ export const CHAMPIONS: Champion[] = [
 export const champById = (id: string) => CHAMPIONS.find((c) => c.id === id)!;
 export const ALL_ROLES: Role[] = ['tank', 'fighter', 'shooter', 'mage', 'support', 'assassin'];
 
+// Позиция игрока в команде: 0 верх, 1 центр, 2 стрелок, 3 лес, 4 поддержка
+export type Pos = 0 | 1 | 2 | 3 | 4;
+export const POS_NAMES = ['Верх', 'Центр', 'Стрелок', 'Лес', 'Поддержка'] as const;
+// Какие роли героев подходят позиции
+export const POS_ROLES: Record<Pos, Role[]> = {
+  0: ['tank', 'fighter'],
+  1: ['mage', 'assassin'],
+  2: ['shooter'],
+  3: ['assassin', 'fighter'],
+  4: ['support', 'tank'],
+};
+
 export interface Player {
   id: string;
   nick: string;
+  pos: Pos;
   atk: number;
   def: number;
   iq: number;
@@ -128,17 +141,18 @@ export interface Team {
 const NICK_A = ['Нова', 'Рекс', 'Зефир', 'Кайто', 'Флин', 'Мира', 'Орбит', 'Пиксель', 'Сайфер', 'Тор', 'Ульф', 'Вега', 'Гекс', 'Дрейк', 'Эхо', 'Йоль', 'Квант', 'Люкс', 'Неон', 'Опал', 'Призм', 'Руна', 'Синк', 'Тайга', 'Фокс', 'Хаки', 'Цирк', 'Шторм', 'Юки', 'Ярс', 'Бриз', 'Вольт', 'Глинт', 'Дюна', 'Жук', 'Зоркий'];
 const NICK_B = ['', '', '', 'X', '7', 'Pro', 'Jr', 'One', '99', 'Z'];
 
-export function makePlayer(rng: Rng, level: number, used: Set<string>): Player {
+export function makePlayer(rng: Rng, level: number, used: Set<string>, pos: Pos = rng.int(0, 4) as Pos): Player {
   let nick = '';
   do nick = rng.pick(NICK_A) + rng.pick(NICK_B);
   while (used.has(nick));
   used.add(nick);
   const stat = () => Math.round(Math.max(20, Math.min(95, level + rng.range(-14, 14))));
   const pool = {} as Record<Role, number>;
-  const main = rng.pick(ALL_ROLES);
-  for (const r of ALL_ROLES) pool[r] = Math.round(rng.range(20, 60));
+  for (const r of ALL_ROLES) pool[r] = Math.round(rng.range(20, 55));
+  const [main, second] = POS_ROLES[pos];
   pool[main] = Math.round(rng.range(70, 95));
-  const p: Player = { id: 'p' + Math.floor(rng.next() * 1e9).toString(36), nick, atk: stat(), def: stat(), iq: stat(), form: 85, pool, salary: 0 };
+  if (second) pool[second] = Math.round(rng.range(50, 80));
+  const p: Player = { id: 'p' + Math.floor(rng.next() * 1e9).toString(36), nick, pos, atk: stat(), def: stat(), iq: stat(), form: 85, pool, salary: 0 };
   p.salary = Math.round((p.atk + p.def + p.iq) / 3) * 10;
   return p;
 }
@@ -160,7 +174,7 @@ export function makeTeams(rng: Rng): Team[] {
     tag: d.tag,
     color: d.color,
     human: i === 0,
-    players: Array.from({ length: 5 }, () => makePlayer(rng, i === 0 ? 52 : 46 + rng.range(0, 16), used)),
+    players: ([0, 3, 1, 2, 4] as Pos[]).map((pos) => makePlayer(rng, i === 0 ? 52 : 46 + rng.range(0, 16), used, pos)),
   }));
 }
 

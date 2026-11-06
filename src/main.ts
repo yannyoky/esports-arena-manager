@@ -3,7 +3,7 @@ import '@fontsource/russo-one/400.css';
 import '@fontsource/golos-text/400.css';
 import '@fontsource/golos-text/600.css';
 import './style.css';
-import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, Champion, ROLE_NAMES, Role, SIDE_COLORS, Team, champById } from './data';
+import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, Champion, POS_NAMES, POS_ROLES, ROLE_NAMES, Role, SIDE_COLORS, Team, champById } from './data';
 import { ORDER, PHASE_NAME, aiChoice, apply, assign, done, newDraft, taken } from './draft';
 import { ICON, crest } from './icons';
 import {
@@ -13,7 +13,8 @@ import {
 import { portrait } from './models';
 import { drawMatch } from './render';
 import { Rng } from './rng';
-import { MATCH_TIME, Match } from './sim';
+import { LANE_NAMES } from './map';
+import { MATCH_TIME, Match, NEUTRAL_NAMES, STRATEGY_TEXT, Strategy, autoStrategy } from './sim';
 
 const app = document.getElementById('app')!;
 let season: Season = load() ?? newSeason();
@@ -135,7 +136,8 @@ function roster() {
     .map((p) => {
       const best = [...ALL_ROLES].sort((a, b) => p.pool[b] - p.pool[a]).slice(0, 2);
       return `<section class="block player">
-        <div class="row"><b>${esc(p.nick)}</b><span class="dim">${p.salary} в неделю</span></div>
+        <div class="row"><b>${esc(p.nick)}</b><span class="pos">${POS_NAMES[p.pos]}</span></div>
+        <div class="dim small">Зарплата ${p.salary} в неделю · лучше всего: ${POS_ROLES[p.pos].map((r) => ROLE_NAMES[r]).join(', ')}</div>
         ${statBar('Атака', p.atk)}${statBar('Защита', p.def)}${statBar('Тактика', p.iq)}${statBar('Форма', p.form)}
         <div class="roles">${best.map((r) => `<span class="chip">${ROLE_NAMES[r]} ${p.pool[r]}</span>`).join('')}</div>
       </section>`;
@@ -285,19 +287,26 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
   const me = teams[mySide];
   const mine = assign(me, picks[mySide]);
   const theirs = assign(teams[1 - mySide], picks[1 - mySide]);
+  const foeStrat = autoStrategy(theirs);
+  let strat: Strategy = autoStrategy(mine);
   let first: number | null = null;
   let shown = false;
   const render = () => {
     swap(`<div class="screen lineup">
-      <header class="lineup-head"><h2>Расстановка</h2><p>Нажмите на двух игроков, чтобы поменять их героев.</p></header>
+      <header class="lineup-head"><h2>Расстановка</h2><p>Каждый игрок стоит на своей позиции. Нажмите на двух игроков, чтобы поменять их героев.</p></header>
       <div class="lanes">${me.players
         .map((p, i) => {
           const c = champById(mine[i]);
+          const onPos = POS_ROLES[p.pos].includes(c.role);
           return `<button class="lane ${first === i ? 'on' : ''}" data-i="${i}">
-            ${img(c)}<div><b>${esc(p.nick)}</b><small>${c.name} · ${ROLE_NAMES[c.role]}</small></div>
+            <span class="posl">${POS_NAMES[p.pos]}</span>
+            ${img(c)}<div><b>${esc(p.nick)}</b><small>${c.name} · ${ROLE_NAMES[c.role]}${onPos ? '' : ' · <i class="warn">не его позиция</i>'}</small></div>
             <em class="${p.pool[c.role] >= 70 ? 'good' : p.pool[c.role] < 45 ? 'bad' : ''}">${p.pool[c.role]}</em></button>`;
         })
         .join('')}</div>
+      <section class="strats"><h3>Стратегия на матч</h3>${(Object.keys(STRATEGY_TEXT) as Strategy[])
+        .map((k) => `<button class="strat ${strat === k ? 'on' : ''}" data-s="${k}"><b>${STRATEGY_TEXT[k][0]}</b><small>${STRATEGY_TEXT[k][1]}</small></button>`)
+        .join('')}<p class="dim small">Разведка: соперник, скорее всего, выберет «${STRATEGY_TEXT[foeStrat][0]}».</p></section>
       <button class="cta wide" id="go">${ICON.play(18)} Начать матч</button></div>`, shown);
     shown = true;
     app.querySelectorAll<HTMLButtonElement>('[data-i]').forEach(
@@ -312,9 +321,11 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
           render();
         }),
     );
+    app.querySelectorAll<HTMLButtonElement>('[data-s]').forEach((b) => (b.onclick = () => ((strat = b.dataset.s as Strategy), render())));
     document.getElementById('go')!.onclick = () => {
       const p: [string[], string[]] = mySide === 0 ? [mine, theirs] : [theirs, mine];
-      playMatch(new Match({ teams, picks: p, seed: season.seed + season.week * 977 }));
+      const st: [Strategy, Strategy] = mySide === 0 ? [strat, foeStrat] : [foeStrat, strat];
+      playMatch(new Match({ teams, picks: p, strategies: st, seed: season.seed + season.week * 977 }));
     };
   };
   render();
@@ -327,9 +338,10 @@ function playMatch(m: Match) {
   swap(`<div class="screen match">
     <div class="bug">
       <div class="t">${crest(SIDE_COLORS[0], a.tag, 26)}<b>${esc(a.tag)}</b></div>
-      <div class="sc"><b id="k0">0</b><span id="clock">2:00</span><b id="k1">0</b></div>
+      <div class="sc"><b id="k0">0</b><span id="clock">5:00</span><b id="k1">0</b></div>
       <div class="t r"><b>${esc(b.tag)}</b>${crest(SIDE_COLORS[1], b.tag, 26)}</div>
     </div>
+    <div class="objs"><span id="o0"></span><span id="o1"></span></div>
     <div class="field"><canvas id="cv"></canvas><ul class="feed" id="feed"></ul></div>
     <div class="ctrl">
       <button data-speed="1" class="on" aria-label="Скорость 1">${ICON.play(18)}<span>1×</span></button>
@@ -361,12 +373,26 @@ function playMatch(m: Match) {
     document.getElementById('k1')!.textContent = String(m.s.kills[1]);
     const left = Math.max(0, MATCH_TIME - m.s.time);
     document.getElementById('clock')!.textContent = `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}`;
+    for (const sd of [0, 1] as const) {
+      const bits = [`${ICON.tower(13)}${m.s.towersDown[sd]}`];
+      if (m.s.spirit[sd]) bits.push(`<i class="buff sp">Дух ×${m.s.spirit[sd]}</i>`);
+      if (m.s.siege[sd] > 0) bits.push(`<i class="buff cl">Колосс ${Math.ceil(m.s.siege[sd])}</i>`);
+      document.getElementById('o' + sd)!.innerHTML = bits.join('');
+    }
     const key = m.s.feed.length + (m.s.feed[0]?.t ?? 0);
     if (key !== feedLen) {
       feedLen = key;
       document.getElementById('feed')!.innerHTML = m.s.feed
         .slice(0, 3)
         .map((k) => {
+          if (k.kind === 'tower') {
+            const col = SIDE_COLORS[1 - k.side];
+            return `<li style="--c:${col}">${ICON.tower(14)}<span>Башня ${LANE_NAMES[k.lane].toLowerCase()} · ${esc(m.setup.teams[k.side].tag)}</span></li>`;
+          }
+          if (k.kind === 'objective') {
+            const col = SIDE_COLORS[k.side];
+            return `<li style="--c:${col}">${ICON.star(14)}<span>${esc(m.setup.teams[k.side].tag)}: ${NEUTRAL_NAMES[k.type]}</span></li>`;
+          }
           const col = SIDE_COLORS[k.victim.side === 0 ? 1 : 0];
           const killer = k.killer ? img(k.killer.champ, 'xs') : `<span class="core-ic" style="background:${col}"></span>`;
           return `<li style="--c:${col}">${killer}${ICON.sword(12)}${img(k.victim.champ, 'xs dead')}<span>${esc(k.victim.player.nick)}</span></li>`;
@@ -450,7 +476,7 @@ function result(m: Match) {
   overlay.className = 'overlay';
   overlay.innerHTML = `<div class="sheet">
     <h2 class="${won ? 'win' : 'lose'}">${won ? 'Победа' : 'Поражение'}</h2>
-    <p class="dim">Убийства ${s.kills[0]} : ${s.kills[1]}${s.cores[0].hp <= 0 || s.cores[1].hp <= 0 ? ' · ядро разрушено' : ''}</p>
+    <p class="dim">${s.cores[0].hp <= 0 || s.cores[1].hp <= 0 ? 'Ядро разрушено' : 'По истечении времени'} · убийства ${s.kills[0]} : ${s.kills[1]} · башни ${s.towersDown[0]} : ${s.towersDown[1]}</p>
     <div class="mvp-card">${img(mvp.champ)}<div><small>Лучший игрок матча</small><b>${esc(mvp.player.nick)}</b><span>${mvp.champ.name} · ${mvp.kills}/${mvp.deaths}</span></div></div>
     <table class="tbl"><thead><tr><th>Игрок</th><th>У/С</th><th>Урон</th><th>Леч.</th></tr></thead><tbody>${rows}</tbody></table>
     <button class="cta wide" id="cont">Дальше</button></div>`;

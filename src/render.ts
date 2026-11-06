@@ -2,7 +2,8 @@
 // каждый кадр поверх неё рисуются только герои и эффекты. Не больше 30 кадров/с.
 import { SIDE_COLORS } from './data';
 import { drawHero } from './models';
-import { CORE_HP, H, Match, W } from './sim';
+import { CAMPS, LANE_PTS, OBJECTIVES, riverX } from './map';
+import { CORE_HP, Creep, H, Match, Neutral, Tower, Unit, W } from './sim';
 import { Rng } from './rng';
 
 interface View {
@@ -37,13 +38,8 @@ function worldTransform(ctx: CanvasRenderingContext2D, v: View) {
 
 let mapCache: { key: string; cv: HTMLCanvasElement } | null = null;
 
-const LANES = [
-  (t: number) => [120 + t * 760, 300 - Math.sin(t * Math.PI) * 210],
-  (t: number) => [120 + t * 760, 300 + Math.sin(t * 6.28) * 18],
-  (t: number) => [120 + t * 760, 300 + Math.sin(t * Math.PI) * 210],
-];
-
-const riverX = (y: number) => 500 + Math.sin(y / 70) * 26;
+// Линии как функции t → точка, по готовым точкам из map.ts
+const LANES = LANE_PTS.map((pts) => (t: number) => pts[Math.round(Math.max(0, Math.min(1, t)) * (pts.length - 1))]);
 
 const DECOR = (() => {
   const r = new Rng(77);
@@ -51,6 +47,7 @@ const DECOR = (() => {
   const clear = (x: number, y: number) => {
     if (Math.hypot(x - 55, y - 300) < 170 || Math.hypot(x - 945, y - 300) < 170) return false;
     if (Math.abs(x - riverX(y)) < 50) return false;
+    for (const [cx, cy] of [...CAMPS, OBJECTIVES.spirit, OBJECTIVES.colossus]) if (Math.hypot(x - cx, y - cy) < 60) return false;
     for (const lane of LANES)
       for (let t = 0; t <= 1; t += 0.04) {
         const [lx, ly] = lane(t);
@@ -125,6 +122,31 @@ function paintMap(ctx: CanvasRenderingContext2D) {
       ctx.ellipse(x, y + r.range(-8, 8), 9, 7, 0, 0, TAU);
       ctx.fill();
     }
+  }
+
+  // Логова лесных лагерей и ямы объектов
+  for (const [cx, cy] of CAMPS) {
+    ctx.fillStyle = '#243424';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 38, 30, 0, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+  for (const [[cx, cy], col] of [
+    [OBJECTIVES.spirit, '#2c6b6a'],
+    [OBJECTIVES.colossus, '#5a5040'],
+  ] as const) {
+    ctx.fillStyle = col;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, 52, 40, 0, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6, 6]);
+    ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   // Площадки баз
@@ -297,6 +319,213 @@ function drawCore(ctx: CanvasRenderingContext2D, v: View, x: number, y: number, 
   ctx.fillRect(sx - bw / 2, sy + 16 * k, bw * Math.max(0, hpK), 6 * k);
 }
 
+function bar(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, k: number, col: string, h = 4) {
+  ctx.fillStyle = 'rgba(10,8,14,0.85)';
+  ctx.fillRect(x - w / 2 - 1, y - 1, w + 2, h + 2);
+  ctx.fillStyle = col;
+  ctx.fillRect(x - w / 2, y, w * Math.max(0, Math.min(1, k)), h);
+}
+
+function drawTower(ctx: CanvasRenderingContext2D, v: View, tw: Tower, vulnerable: boolean, sc: number) {
+  const [x, y] = P(v, tw.x, tw.y);
+  const col = SIDE_COLORS[tw.side];
+  const k = sc;
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(x, y, 20 * k, 7 * k, 0, 0, TAU);
+  ctx.fill();
+  if (tw.hp <= 0) {
+    // Руины
+    ctx.fillStyle = '#5d584e';
+    for (const [dx, dy, r] of [
+      [-8, -3, 6],
+      [5, -5, 7],
+      [0, 2, 5],
+      [10, 1, 4],
+    ])
+      ctx.beginPath(), ctx.arc(x + dx * k, y + dy * k, r * k, 0, TAU), ctx.fill();
+    return;
+  }
+  // Каменная башня с флагом стороны
+  ctx.fillStyle = tw.flash > 0 ? '#ffffff' : '#77726a';
+  ctx.beginPath();
+  ctx.moveTo(x - 13 * k, y);
+  ctx.lineTo(x - 10 * k, y - 46 * k);
+  ctx.lineTo(x + 10 * k, y - 46 * k);
+  ctx.lineTo(x + 13 * k, y);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#8e897f';
+  ctx.fillRect(x - 13 * k, y - 52 * k, 26 * k, 8 * k);
+  ctx.fillStyle = '#5f5a52';
+  for (let i = -1; i <= 1; i++) ctx.fillRect(x + (i * 9 - 3) * k, y - 58 * k, 6 * k, 6 * k);
+  ctx.fillStyle = col;
+  ctx.fillRect(x - 4 * k, y - 38 * k, 8 * k, 16 * k);
+  ctx.fillStyle = vulnerable ? col : 'rgba(255,255,255,0.35)';
+  ctx.beginPath();
+  ctx.arc(x, y - 66 * k, 5 * k, 0, TAU);
+  ctx.fill();
+  if (!vulnerable) {
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(x, y - 30 * k, 26 * k, 0, TAU);
+    ctx.stroke();
+  }
+  bar(ctx, x, y - 76 * k, 34 * k, tw.hp / tw.maxHp, col, 3);
+}
+
+function drawCreep(ctx: CanvasRenderingContext2D, v: View, c: Creep, t: number, sc: number) {
+  const [x, y] = P(v, c.x, c.y);
+  const k = sc * 0.8;
+  const col = SIDE_COLORS[c.side];
+  const bob = c.moving ? Math.abs(Math.sin(t * 12 + c.y)) * 2 * k : 0;
+  ctx.fillStyle = 'rgba(0,0,0,0.3)';
+  ctx.beginPath();
+  ctx.ellipse(x, y, 9 * k, 3.5 * k, 0, 0, TAU);
+  ctx.fill();
+  ctx.fillStyle = c.flash > 0 ? '#ffffff' : col;
+  ctx.beginPath();
+  ctx.moveTo(x - 8 * k, y - bob);
+  ctx.quadraticCurveTo(x - 9 * k, y - 22 * k - bob, x, y - 24 * k - bob);
+  ctx.quadraticCurveTo(x + 9 * k, y - 22 * k - bob, x + 8 * k, y - bob);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = '#15121b';
+  ctx.fillRect(x + (c.face > 0 ? 0 : -5) * k, y - 16 * k - bob, 5 * k, 2.5 * k);
+  if (c.swing > 0) {
+    ctx.strokeStyle = '#e8e2d4';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + c.face * 6 * k, y - 10 * k);
+    ctx.lineTo(x + c.face * 14 * k, y - 18 * k + (c.swing / 0.25) * 10 * k);
+    ctx.stroke();
+  }
+  if (c.hp < c.maxHp) bar(ctx, x, y - 30 * k - bob, 18 * k, c.hp / c.maxHp, col, 2.5);
+}
+
+function drawNeutral(ctx: CanvasRenderingContext2D, v: View, n: Neutral, t: number, sc: number) {
+  if (n.respawn > 0) return;
+  const [x, y] = P(v, n.x, n.y);
+  const big = n.type === 'colossus' ? 2 : n.type === 'spirit' ? 1.6 : 1;
+  const k = sc * big;
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(x, y, 16 * k, 6 * k, 0, 0, TAU);
+  ctx.fill();
+  const fl = n.flash > 0;
+  if (n.type === 'camp') {
+    // Лесной зверь
+    ctx.fillStyle = fl ? '#fff' : '#6b4a33';
+    ctx.beginPath();
+    ctx.ellipse(x, y - 10 * k, 14 * k, 10 * k, 0, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = fl ? '#fff' : '#7d5a3e';
+    ctx.beginPath();
+    ctx.arc(x + n.face * 12 * k, y - 13 * k, 7 * k, 0, TAU);
+    ctx.fill();
+    ctx.strokeStyle = '#efe6d2';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x + n.face * 16 * k, y - 10 * k);
+    ctx.quadraticCurveTo(x + n.face * 21 * k, y - 12 * k, x + n.face * 20 * k, y - 18 * k);
+    ctx.stroke();
+    ctx.fillStyle = '#1b1420';
+    ctx.fillRect(x + n.face * 13 * k - 1, y - 16 * k, 2.5, 2.5);
+  } else if (n.type === 'spirit') {
+    // Речной дух: парящий светящийся сгусток
+    const fy = y - 26 * k + Math.sin(t * 2) * 3 * k;
+    const g = ctx.createRadialGradient(x, fy, 0, x, fy, 26 * k);
+    g.addColorStop(0, 'rgba(127,230,212,0.8)');
+    g.addColorStop(1, 'rgba(127,230,212,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.arc(x, fy, 26 * k, 0, TAU);
+    ctx.fill();
+    ctx.fillStyle = fl ? '#fff' : '#bff5ea';
+    ctx.beginPath();
+    ctx.moveTo(x - 10 * k, fy + 4 * k);
+    ctx.quadraticCurveTo(x - 12 * k, fy - 14 * k, x, fy - 16 * k);
+    ctx.quadraticCurveTo(x + 12 * k, fy - 14 * k, x + 10 * k, fy + 4 * k);
+    for (let i = 0; i < 4; i++) ctx.lineTo(x + (5 - i * 5) * k, fy + (i % 2 ? 4 : 10) * k + Math.sin(t * 5 + i) * 2 * k);
+    ctx.closePath();
+    ctx.fill();
+    ctx.fillStyle = '#1d4a48';
+    ctx.fillRect(x - 5 * k, fy - 6 * k, 3 * k, 3 * k);
+    ctx.fillRect(x + 2 * k, fy - 6 * k, 3 * k, 3 * k);
+  } else {
+    // Каменный колосс
+    const sw = n.swing > 0 ? (n.swing / 0.25) * 6 * k : 0;
+    ctx.fillStyle = fl ? '#fff' : '#8b8272';
+    ctx.fillRect(x - 9 * k, y - 10 * k, 7 * k, 10 * k);
+    ctx.fillRect(x + 2 * k, y - 10 * k, 7 * k, 10 * k);
+    ctx.fillStyle = fl ? '#fff' : '#9c937f';
+    ctx.beginPath();
+    ctx.roundRect(x - 14 * k, y - 32 * k, 28 * k, 24 * k, 5 * k);
+    ctx.fill();
+    ctx.fillStyle = fl ? '#fff' : '#a9a08c';
+    ctx.beginPath();
+    ctx.roundRect(x - 7 * k, y - 42 * k, 14 * k, 11 * k, 3 * k);
+    ctx.fill();
+    ctx.fillStyle = '#ffb547';
+    ctx.fillRect(x - 4 * k, y - 38 * k, 3 * k, 2.5 * k);
+    ctx.fillRect(x + 1 * k, y - 38 * k, 3 * k, 2.5 * k);
+    ctx.fillStyle = fl ? '#fff' : '#7d7464';
+    ctx.beginPath();
+    ctx.arc(x - 17 * k, y - 18 * k + sw, 6 * k, 0, TAU);
+    ctx.arc(x + 17 * k, y - 18 * k - sw, 6 * k, 0, TAU);
+    ctx.fill();
+  }
+  if (n.hp < n.maxHp) bar(ctx, x, y - (n.type === 'camp' ? 28 : 50) * k, 26 * k, n.hp / n.maxHp, '#e8d28a', 3);
+}
+
+function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, p: [number, number], t: number, heroScale: number, dpr: number) {
+  const [x, y] = p;
+  const col = SIDE_COLORS[u.side];
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.globalAlpha = u.hidden > 0 ? 0.35 : 1;
+  ctx.fillStyle = 'rgba(0,0,0,0.35)';
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 15 * heroScale, 5.5 * heroScale, 0, 0, TAU);
+  ctx.fill();
+  ctx.strokeStyle = col;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.ellipse(0, 0, 15 * heroScale, 5.5 * heroScale, 0, 0, TAU);
+  ctx.stroke();
+  ctx.scale(heroScale, heroScale);
+  drawHero(ctx, u.champ, { t: t + u.homeY, moving: u.moving, swing: u.swing, cast: u.cast, flash: u.flash, face: u.face });
+  ctx.restore();
+  ctx.globalAlpha = 1;
+  const bw = 34 * heroScale;
+  const by = y - 60 * heroScale;
+  bar(ctx, x, by, bw, u.hp / u.maxHp, u.side === 0 ? '#59e08a' : '#ff6a6a');
+  if (u.shield > 0) {
+    ctx.fillStyle = '#f2f2f2';
+    ctx.fillRect(x - bw / 2, by, Math.min(bw, bw * (u.shield / u.maxHp)), 1.5);
+  }
+  // Уровень героя
+  ctx.fillStyle = col;
+  ctx.fillRect(x - bw / 2 - 12, by - 3, 11, 10);
+  ctx.fillStyle = '#15121b';
+  ctx.font = `700 9px "Golos Text", system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.fillText(String(u.level), x - bw / 2 - 6.5, by + 5);
+  if (u.stun > 0) {
+    ctx.fillStyle = '#ffd166';
+    for (let i = 0; i < 3; i++) {
+      const a = t * 6 + (i * TAU) / 3;
+      ctx.beginPath();
+      ctx.arc(x + Math.cos(a) * 10 * heroScale, by - 6 + Math.sin(a) * 3, 2, 0, TAU);
+      ctx.fill();
+    }
+  }
+  ctx.font = `600 ${Math.round(Math.max(10, 11 * dpr * 0.6))}px "Golos Text", system-ui, sans-serif`;
+  ctx.fillStyle = 'rgba(245,240,230,0.9)';
+  ctx.fillText(u.player.nick, x, by - 5);
+}
+
 function line(ctx: CanvasRenderingContext2D, a: [number, number], b: [number, number]) {
   ctx.beginPath();
   ctx.moveTo(a[0], a[1]);
@@ -365,63 +594,82 @@ export function drawMatch(ctx: CanvasRenderingContext2D, m: Match, cw: number, c
     ctx.globalAlpha = 1;
   }
 
-  drawCore(ctx, v, s.cores[0].x, s.cores[0].y, 0, s.cores[0].hp / CORE_HP, s.cores[0].hit, t);
-  drawCore(ctx, v, s.cores[1].x, s.cores[1].y, 1, s.cores[1].hp / CORE_HP, s.cores[1].hit, t);
-
-  // Герои, отсортированные по высоте на экране
-  const alive = s.units.filter((u) => u.dead <= 0);
-  const heroScale = Math.max(0.75, v.k * 1.25);
-  const withPos = alive.map((u) => ({ u, p: P(v, u.x, u.y) })).sort((a, b) => a.p[1] - b.p[1]);
-  for (const { u, p } of withPos) {
-    const [x, y] = p;
-    const col = SIDE_COLORS[u.side];
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.globalAlpha = u.hidden > 0 ? 0.35 : 1;
-    ctx.fillStyle = 'rgba(0,0,0,0.35)';
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 15 * heroScale, 5.5 * heroScale, 0, 0, TAU);
-    ctx.fill();
-    ctx.strokeStyle = col;
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.ellipse(0, 0, 15 * heroScale, 5.5 * heroScale, 0, 0, TAU);
-    ctx.stroke();
-    ctx.scale(heroScale, heroScale);
-    drawHero(ctx, u.champ, { t: t + u.homeY, moving: u.moving, swing: u.swing, cast: u.cast, flash: u.flash, face: u.face });
-    ctx.restore();
-    ctx.globalAlpha = 1;
-    // Здоровье, щит и ник
-    const bw = 34 * heroScale;
-    const by = y - 60 * heroScale;
-    ctx.fillStyle = 'rgba(10,8,14,0.85)';
-    ctx.fillRect(x - bw / 2 - 1, by - 1, bw + 2, 6);
-    ctx.fillStyle = u.side === 0 ? '#59e08a' : '#ff6a6a';
-    ctx.fillRect(x - bw / 2, by, bw * (u.hp / u.maxHp), 4);
-    if (u.shield > 0) {
-      ctx.fillStyle = '#f2f2f2';
-      ctx.fillRect(x - bw / 2, by, Math.min(bw, bw * (u.shield / u.maxHp)), 1.5);
+  for (const c of s.cores) {
+    drawCore(ctx, v, c.x, c.y, c.side, c.hp / CORE_HP, c.hit, t);
+    if (!m.vulnerable(c)) {
+      // Пока внутренние башни целы, ядро под защитным куполом
+      const [x, y] = P(v, c.x, c.y);
+      ctx.strokeStyle = 'rgba(255,255,255,0.28)';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(x, y - 30 * v.k, 44 * v.k, Math.PI, 0);
+      ctx.stroke();
     }
-    if (u.stun > 0) {
-      ctx.fillStyle = '#ffd166';
-      for (let i = 0; i < 3; i++) {
-        const a = t * 6 + (i * TAU) / 3;
-        ctx.beginPath();
-        ctx.arc(x + Math.cos(a) * 10 * heroScale, by - 6 + Math.sin(a) * 3, 2, 0, TAU);
-        ctx.fill();
-      }
-    }
-    ctx.font = `600 ${Math.round(Math.max(10, 11 * dpr * 0.6))}px "Golos Text", system-ui, sans-serif`;
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(245,240,230,0.9)';
-    ctx.fillText(u.player.nick, x, by - 5);
   }
+
+  // Строения, монстры, крипы и герои, отсортированные по высоте на экране
+  const heroScale = Math.max(0.75, v.k * 1.25);
+  type Item = { y: number; draw: () => void };
+  const items: Item[] = [];
+  for (const tw of s.towers) {
+    const [, y] = P(v, tw.x, tw.y);
+    items.push({ y, draw: () => drawTower(ctx, v, tw, m.vulnerable(tw), heroScale) });
+  }
+  for (const n of s.neutrals) {
+    const [, y] = P(v, n.x, n.y);
+    items.push({ y, draw: () => drawNeutral(ctx, v, n, t, heroScale) });
+  }
+  for (const c of s.creeps) {
+    const [, y] = P(v, c.x, c.y);
+    items.push({ y, draw: () => drawCreep(ctx, v, c, t, heroScale) });
+  }
+  for (const u of s.units) {
+    if (u.dead > 0) continue;
+    const p = P(v, u.x, u.y);
+    items.push({ y: p[1], draw: () => drawUnit(ctx, u, p, t, heroScale, dpr) });
+  }
+  items.sort((a, b) => a.y - b.y);
+  for (const it of items) it.draw();
 
   // Летящие снаряды и тексты поверх героев
   for (const f of s.fx) {
     const p = 1 - f.t / f.life;
     const a: [number, number] = P(v, f.x, f.y);
-    if (f.kind === 'shot' || f.kind === 'arrow' || f.kind === 'bolt' || f.kind === 'dash' || f.kind === 'hook') {
+    if (f.kind === 'tower') {
+      const b = P(v, f.x2!, f.y2!);
+      const top: [number, number] = [a[0], a[1] - 66 * heroScale];
+      const k = Math.min(1, p * 1.5);
+      const hx = top[0] + (b[0] - top[0]) * k;
+      const hy = top[1] + (b[1] - 20 * heroScale - top[1]) * k;
+      ctx.fillStyle = f.color;
+      ctx.beginPath();
+      ctx.arc(hx, hy, 4, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 0.4;
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = 2;
+      line(ctx, top, [hx, hy]);
+      ctx.globalAlpha = 1;
+    } else if (f.kind === 'rubble') {
+      ctx.globalAlpha = f.t / f.life;
+      ctx.fillStyle = f.color;
+      for (let i = 0; i < 10; i++) {
+        const ang = (i / 10) * TAU;
+        ctx.fillRect(a[0] + Math.cos(ang) * p * 40, a[1] - 30 * heroScale + Math.sin(ang) * p * 20 + p * p * 30, 4, 4);
+      }
+      ctx.globalAlpha = 1;
+    } else if (f.kind === 'level') {
+      ctx.globalAlpha = Math.min(1, (f.t / f.life) * 2);
+      ctx.font = `400 ${Math.round(13 * Math.max(1, dpr * 0.7))}px "Russo One", system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(10,8,14,0.8)';
+      const ty = a[1] - 70 * heroScale - p * 20;
+      ctx.strokeText(f.text!, a[0], ty);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text!, a[0], ty);
+      ctx.globalAlpha = 1;
+    } else if (f.kind === 'shot' || f.kind === 'arrow' || f.kind === 'bolt' || f.kind === 'dash' || f.kind === 'hook') {
       const b = P(v, f.x2!, f.y2!);
       const lift = 26 * heroScale;
       const head: [number, number] = [a[0] + (b[0] - a[0]) * Math.min(1, p * 1.6), a[1] - lift + (b[1] - a[1]) * Math.min(1, p * 1.6)];

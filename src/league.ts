@@ -21,7 +21,7 @@ export interface Fixture {
 }
 
 export interface Season {
-  version: 2;
+  version: 3;
   seed: number;
   week: number; // 1-based
   teams: Team[];
@@ -31,7 +31,7 @@ export interface Season {
   finished: boolean;
 }
 
-const SAVE_KEY = 'arena-manager-save-v2';
+const SAVE_KEY = 'arena-manager-save-v3';
 
 // Круговая система: каждая пара команд играет дважды
 function schedule(ids: string[]): Fixture[] {
@@ -52,7 +52,7 @@ export function newSeason(seed = Date.now() % 1e9): Season {
   const rng = new Rng(seed);
   const teams = makeTeams(rng);
   return {
-    version: 2,
+    version: 3,
     seed,
     week: 1,
     teams,
@@ -78,7 +78,7 @@ export function load(): Season | null {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as Season;
-    return s.version === 2 ? s : null;
+    return s.version === 3 ? s : null;
   } catch {
     return null;
   }

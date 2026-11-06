@@ -238,3 +238,22 @@ main { flex: 1; padding: 8px max(16px, env(safe-area-inset-right)) calc(88px + e
   .enter, .sheet, .feed li, .stat b, .slot.locked .pt { animation: fade 160ms linear; }
   .lane.on { transform: none; }
 }
+
+/* ---------- Позиции, стратегия, объекты ---------- */
+.small { font-size: 13px; }
+.pos { font-size: 12px; font-weight: 600; color: var(--stage-ink); background: var(--stage); border-radius: 999px; padding: 2px 9px; }
+.posl { width: 64px; flex: none; font-size: 11px; font-weight: 600; color: var(--stage); text-transform: none; }
+.warn { font-style: normal; color: var(--bad); }
+.strats { display: flex; flex-direction: column; gap: 8px; }
+.strats h3 { font-size: 17px; }
+.strats p { margin: 0; }
+.strat { display: flex; flex-direction: column; gap: 2px; text-align: left; padding: 10px 12px; border-radius: 12px; background: var(--panel); transition: box-shadow 160ms var(--ease), transform 160ms var(--ease); }
+.strat b { font-family: var(--display); font-weight: 400; font-size: 16px; }
+.strat small { color: var(--muted); line-height: 1.35; }
+.strat.on { box-shadow: inset 0 0 0 2px var(--stage); }
+.strat:active { transform: scale(0.98); }
+.objs { display: flex; justify-content: space-between; padding: 0 max(14px, env(safe-area-inset-left)) 4px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.objs span { display: flex; align-items: center; gap: 6px; }
+.buff { font-style: normal; font-weight: 600; border-radius: 6px; padding: 1px 6px; }
+.buff.sp { background: rgba(127, 230, 212, 0.18); color: #9ff0e1; }
+.buff.cl { background: rgba(255, 181, 71, 0.18); color: var(--stage); }

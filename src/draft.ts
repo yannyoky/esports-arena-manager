@@ -1,6 +1,6 @@
 // Драфт по турнирной схеме: две фазы банов и две фазы пиков.
 // Синяя сторона (0) выбирает первой, красная (1) получает два пика подряд.
-import { CHAMPIONS, Champion, Role, Team, ALL_ROLES } from './data';
+import { CHAMPIONS, Champion, POS_ROLES, Role, Team, ALL_ROLES } from './data';
 import { Rng } from './rng';
 
 export type Act = 'ban' | 'pick';
@@ -42,9 +42,20 @@ export function apply(d: DraftState, id: string) {
 // Насколько команда сильна на герое: лучший игрок этой роли
 const teamFit = (team: Team, c: Champion) => Math.max(...team.players.map((p) => p.pool[c.role]));
 
-const missingRoles = (picks: string[]) => {
-  const have = new Set(picks.map((id) => CHAMPIONS.find((c) => c.id === id)!.role));
-  return ALL_ROLES.filter((r) => !have.has(r));
+// Роли, нужные позициям команды, которые ещё не закрыты героями
+const missingRoles = (team: Team, picks: string[]) => {
+  const roles = picks.map((id) => CHAMPIONS.find((c) => c.id === id)!.role);
+  const open = team.players.filter((p) => {
+    const i = roles.findIndex((r) => POS_ROLES[p.pos].includes(r));
+    if (i >= 0) {
+      roles.splice(i, 1);
+      return false;
+    }
+    return true;
+  });
+  const need = new Set<Role>();
+  for (const p of open) for (const r of POS_ROLES[p.pos]) need.add(r);
+  return ALL_ROLES.filter((r) => need.has(r));
 };
 
 // Компьютерный капитан: банит сильных для соперника, пикает под свой состав
@@ -53,7 +64,7 @@ export function aiChoice(d: DraftState, me: Team, foe: Team, rng: Rng): string {
   const free = CHAMPIONS.filter((c) => !taken(d).has(c.id));
   const score = (c: Champion) => {
     if (st.act === 'ban') return teamFit(foe, c) + rng.range(0, 25);
-    const need = missingRoles(d.picks[st.side]);
+    const need = missingRoles(me, d.picks[st.side]);
     const roleBonus = need.includes(c.role) ? 30 : -25;
     // Без поддержки и стража состав разваливается: подтягиваем их к середине драфта
     const core: Role[] = ['tank', 'support'];
@@ -70,7 +81,11 @@ export function assign(team: Team, picks: string[]): string[] {
   let bestScore = -1;
   const perm = (arr: number[], k: number) => {
     if (k === arr.length) {
-      const s = arr.reduce((acc, ci, pi) => acc + team.players[pi].pool[champs[ci].role], 0);
+      const s = arr.reduce((acc, ci, pi) => {
+        const pl = team.players[pi];
+        const fit = POS_ROLES[pl.pos].includes(champs[ci].role) ? 25 : 0;
+        return acc + pl.pool[champs[ci].role] + fit;
+      }, 0);
       if (s > bestScore) {
         bestScore = s;
         best = [...arr];
