@@ -1,5 +1,6 @@
 // Сезон: круговой турнир, недельный календарь, тренировки, бюджет, сохранение.
-import { ALL_ROLES, CHAMPIONS, Role, Team, makeTeams } from './data';
+import { Team, makeTeams } from './data';
+import { autoDraft } from './draft';
 import { Match } from './sim';
 import { Rng } from './rng';
 
@@ -20,7 +21,7 @@ export interface Fixture {
 }
 
 export interface Season {
-  version: 1;
+  version: 2;
   seed: number;
   week: number; // 1-based
   teams: Team[];
@@ -30,7 +31,7 @@ export interface Season {
   finished: boolean;
 }
 
-const SAVE_KEY = 'arena-manager-save-v1';
+const SAVE_KEY = 'arena-manager-save-v2';
 
 // Круговая система: каждая пара команд играет дважды
 function schedule(ids: string[]): Fixture[] {
@@ -51,7 +52,7 @@ export function newSeason(seed = Date.now() % 1e9): Season {
   const rng = new Rng(seed);
   const teams = makeTeams(rng);
   return {
-    version: 1,
+    version: 2,
     seed,
     week: 1,
     teams,
@@ -77,7 +78,7 @@ export function load(): Season | null {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as Season;
-    return s.version === 1 ? s : null;
+    return s.version === 2 ? s : null;
   } catch {
     return null;
   }
@@ -97,26 +98,6 @@ export const humanTeam = (s: Season) => s.teams.find((t) => t.human)!;
 export function humanFixture(s: Season): Fixture | undefined {
   const h = humanTeam(s).id;
   return s.fixtures.find((f) => f.week === s.week && (f.home === h || f.away === h));
-}
-
-// Компьютер выбирает чемпионов: лучшую роль игрока, без повторов
-export function autoPicks(team: Team, rng: Rng, taken: Set<string> = new Set()): string[] {
-  const picks: string[] = [];
-  const usedRoles = new Map<Role, number>();
-  for (const p of team.players) {
-    const roles = [...ALL_ROLES].sort((a, b) => p.pool[b] - p.pool[a] + ((usedRoles.get(a) ?? 0) - (usedRoles.get(b) ?? 0)) * 40);
-    let pick = '';
-    for (const r of roles) {
-      const opts = CHAMPIONS.filter((c) => c.role === r && !taken.has(c.id) && !picks.includes(c.id));
-      if (opts.length) {
-        pick = rng.pick(opts).id;
-        usedRoles.set(r, (usedRoles.get(r) ?? 0) + 1);
-        break;
-      }
-    }
-    picks.push(pick);
-  }
-  return picks;
 }
 
 export interface Standing {
@@ -181,9 +162,8 @@ export function finishWeek(s: Season, humanResult: { winner: string; kills: [num
     }
     const home = teamById(s, f.home);
     const away = teamById(s, f.away);
-    const hp = autoPicks(home, rng);
-    const ap = autoPicks(away, rng, new Set(hp));
-    const m = new Match({ teams: [home, away], picks: [hp, ap], seed: Math.floor(rng.next() * 1e9) });
+    const picks = autoDraft(home, away, rng);
+    const m = new Match({ teams: [home, away], picks, seed: Math.floor(rng.next() * 1e9) }, false);
     const st = m.runToEnd();
     f.result = { winner: st.winner === 0 ? home.id : away.id, kills: [st.kills[0], st.kills[1]] };
   }

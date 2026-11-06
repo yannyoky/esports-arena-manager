@@ -4,7 +4,7 @@ const config: CapacitorConfig = {
   appId: 'io.github.yannyoky.arenamanager',
   appName: 'Арена Менеджер',
   webDir: 'dist',
-  android: { backgroundColor: '#11131a' },
+  android: { backgroundColor: '#15121b' },
 };
 
 export default config;
