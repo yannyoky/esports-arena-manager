@@ -9,7 +9,7 @@ import { BASE_RULES, Note, PATCH_EVERY, RULE_INFO, Rules, fmtRule, heroPower, mo
 import { ICON, crest } from './icons';
 import {
   ACADEMY_COST, ACADEMY_WEEKLY, Deal, Fixture, LEAGUE_WEEKS, ROSTER_MAX, STAFF_INFO, STAFF_MAX, STAGE_NAMES, Season, Stage, StaffRole,
-  TRAINING_NAMES, Training, acceptChance, applyTraining, asking, canTalk, chemistry, chooseSponsor, dropProspect, finishWeek, hireStaff,
+  TRAINING_NAMES, TRAINING_TEXT, Training, acceptChance, asking, setFocus, canTalk, chemistry, chooseSponsor, dropProspect, finishWeek, hireStaff,
   humanFixture, humanTeam, load, matchRecord, matchSetup, negotiate, newSeason, openAcademy, owner, potentialText, release, roster,
   save, saveReplay, sell, sellPrice, signingBonus, sponsorText, staffCost, staffSalary, standings, startNextSeason, swapStarter,
   teamById, totalWeeks, transferFee, upfront,
@@ -172,15 +172,16 @@ function talk(p: Player, deal: Deal, back: () => void) {
 
 // ---------- Штаб ----------
 
-const TRAIN_ICON: Record<Training, string> = { atk: ICON.sword(22), def: ICON.shield(22), iq: ICON.brain(22), rest: ICON.rest(22) };
+const TRAIN_ICON: Record<Training, string> = { mix: ICON.star(22), atk: ICON.sword(22), def: ICON.shield(22), iq: ICON.brain(22), rest: ICON.rest(22) };
 
-function trainingBlock(trained: boolean) {
-  return `<section class="block">
-      <h3>Тренировка недели</h3>
+// План тренировок: выбирается один раз и работает каждую неделю
+function trainingBlock() {
+  return `<section class="block" id="plan">
+      <h3>Тренировки</h3>
+      <p class="dim small">Команда тренируется каждую неделю сама. Выберите, на что делать упор.</p>
       <div class="train">${(Object.keys(TRAINING_NAMES) as Training[])
-        .map((t) => `<button class="opt" data-train="${t}" ${trained ? 'disabled' : ''}>${TRAIN_ICON[t]}<span>${TRAINING_NAMES[t]}</span></button>`)
+        .map((t) => `<button class="opt ${season.focus === t ? 'on' : ''}" data-train="${t}" aria-pressed="${season.focus === t}">${TRAIN_ICON[t]}<span>${TRAINING_NAMES[t]}</span><small>${TRAINING_TEXT[t]}</small></button>`)
         .join('')}</div>
-      <p class="dim small">Тренировки навыков утомляют игроков, отдых снимает усталость. Сильнее растут молодые.</p>
     </section>`;
 }
 
@@ -207,7 +208,6 @@ function home() {
   if (season.finished) return offseason();
   const me = humanTeam(season);
   const fx = humanFixture(season);
-  const trained = season.trained === season.week;
   const sponsorNote = !season.sponsor
     ? `<button class="block patch-card fresh" id="sp"><div class="pc-top">${ICON.coin(18)}<b>Выберите спонсора</b></div><span class="dim small">Без спонсора клуб теряет доход каждую неделю</span></button>`
     : '';
@@ -222,21 +222,18 @@ function home() {
         <div class="side">${crest(opp.color, opp.tag, 64)}<b>${esc(opp.tag)}</b><small>${record(opp)}</small></div>
       </div>
       <div class="opp">${esc(opp.name)}${opp.foreign ? ' · зарубежный клуб' : ''}</div>
-      <button class="cta" id="play" ${trained ? '' : 'disabled'}>${trained ? 'На драфт' : 'Сначала проведите тренировку'}</button>
+      <button class="cta" id="play">На драфт</button>
     </section>`;
   } else {
     top = `<section class="marquee"><div class="when">${season.week <= LEAGUE_WEEKS + 2 ? 'Плей-офф' : 'Кубок мира'}</div>
-      <p>Ваша команда на этой неделе не играет. Можно потренироваться, заняться трансферами и посмотреть матчи других.</p>
+      <p>Ваша команда на этой неделе не играет. Можно заняться трансферами и посмотреть матчи других.</p>
       <button class="cta" id="skipweek">Завершить неделю</button></section>`;
   }
-  shell('home', `${top}${sponsorNote}${patchCard()}${trainingBlock(trained)}${logCard()}`);
-  on('[data-train]', (b) => {
-    applyTraining(season, b.dataset.train as Training);
-    save(season);
-    home();
-  });
+  const focus = `<button class="block patch-card" id="focus"><div class="pc-top">${TRAIN_ICON[season.focus]}<b>Тренировки: ${TRAINING_NAMES[season.focus]}</b><span class="dim small">изменить</span></div></button>`;
+  shell('home', `${top}${sponsorNote}${patchCard()}${focus}${logCard()}`);
+  document.getElementById('focus')!.onclick = () => rosterScreen();
   const play = document.getElementById('play');
-  if (play) play.onclick = () => trained && draft();
+  if (play) play.onclick = () => draft();
   const sk = document.getElementById('skipweek');
   if (sk)
     sk.onclick = () => {
@@ -283,6 +280,7 @@ function rosterScreen() {
   const chem = chemistry(me);
   const wage = roster(me).reduce((a, p) => a + p.salary, 0);
   shell('roster', `
+    ${trainingBlock()}
     <section class="block">
       <div class="row"><h3>Стартовая пятёрка</h3><span class="dim small">сыгранность ${Math.round(chem * 100)}%</span></div>
       <div class="chem"><i style="--v:${Math.round(chem * 100)}%"></i></div>
@@ -294,6 +292,10 @@ function rosterScreen() {
     </section>
     <p class="dim small center">Зарплаты состава: ${wage} в неделю. Нажмите на игрока, чтобы заменить, продать или продлить контракт.</p>`);
   on('[data-p]', (el) => playerSheet(findPlayer(el.dataset.p!)));
+  on('[data-train]', (b) => {
+    setFocus(season, b.dataset.train as Training);
+    rosterScreen();
+  });
 }
 
 function playerSheet(p: Player) {

@@ -375,3 +375,7 @@ button.sponsor:active { transform: scale(0.98); }
 .hero-btn.tip .pt { box-shadow: 0 0 0 2px var(--good); }
 .tabs button span { font-size: 11px; }
 .sheet h2.sm { font-size: 22px; }
+.train .opt:first-child { grid-column: 1 / -1; }
+.opt small { color: var(--muted); font-weight: 400; font-size: 12px; line-height: 1.3; }
+.opt.on { box-shadow: inset 0 0 0 2px var(--stage); background: color-mix(in srgb, var(--stage) 12%, var(--panel-2)); }
+.patch-card .pc-top .ico { width: 18px; height: 18px; }

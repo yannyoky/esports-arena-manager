@@ -6,9 +6,10 @@ import { Match, MatchSetup } from './sim';
 import { Meta, MatchRecord, PATCH_EVERY, newMeta, record, releasePatch } from './meta';
 import { Rng } from './rng';
 
-export type Training = 'atk' | 'def' | 'iq' | 'rest';
+export type Training = 'mix' | 'atk' | 'def' | 'iq' | 'rest';
 
 export const TRAINING_NAMES: Record<Training, string> = {
+  mix: 'Сбалансированно',
   atk: 'Механика (атака)',
   def: 'Выживание (защита)',
   iq: 'Разбор игр (тактика)',
@@ -83,7 +84,8 @@ export interface Season {
   seed: number;
   seasonNo: number;
   week: number; // 1-based
-  trained: number; // неделя последней тренировки
+  trained: number; // устарело: тренировка теперь идёт сама
+  focus: Training; // упор тренировок: применяется каждую неделю автоматически
   teams: Team[];
   fixtures: Fixture[];
   money: number;
@@ -184,6 +186,7 @@ export function newSeason(seed = Date.now() % 1e9): Season {
     seasonNo: 1,
     week: 1,
     trained: 0,
+    focus: 'mix',
     teams,
     fixtures: schedule(teams.map((t) => t.id)),
     money: 20000,
@@ -224,7 +227,9 @@ export function load(): Season | null {
     const raw = localStorage.getItem(SAVE_KEY);
     if (!raw) return null;
     const s = JSON.parse(raw) as Season;
-    return s.version === 5 ? s : null;
+    if (s.version !== 5) return null;
+    s.focus ??= 'mix';
+    return s;
   } catch {
     return null;
   }
@@ -281,7 +286,26 @@ export function standings(s: Season): Standing[] {
 export const chemistry = (t: Team) => t.players.reduce((a, p) => a + Math.min(1, p.together / 12), 0) / t.players.length;
 
 // Тренировка: рост зависит от возраста, потолка и аналитика
-export function applyTraining(s: Season, t: Training) {
+export const TRAINING_TEXT: Record<Training, string> = {
+  mix: 'Понемногу всё по очереди. Средний рост, умеренная усталость.',
+  atk: 'Быстрее растёт атака. Игроки устают.',
+  def: 'Быстрее растёт защита. Игроки устают.',
+  iq: 'Быстрее растёт тактика. Игроки устают.',
+  rest: 'Навыки не растут, зато форма выше и усталость уходит.',
+};
+
+export function setFocus(s: Season, t: Training) {
+  if (s.focus === t) return;
+  s.focus = t;
+  s.log.unshift(`Новый упор тренировок: «${TRAINING_NAMES[t]}».`);
+  save(s);
+}
+
+// Еженедельная тренировка по выбранному упору
+function applyTraining(s: Season) {
+  let t = s.focus;
+  const mix = t === 'mix';
+  if (mix) t = (['atk', 'def', 'iq'] as const)[(s.week + s.seasonNo) % 3];
   const rng = new Rng(s.seed + s.week * 7919 + s.seasonNo * 131);
   const me = humanTeam(s);
   for (const p of roster(me)) {
@@ -292,10 +316,11 @@ export function applyTraining(s: Season, t: Training) {
     }
     const room = Math.max(0.15, Math.min(1.3, (p.potential - ovr(p)) / 12));
     const ageK = p.age < 21 ? 1.3 : p.age < 25 ? 1 : p.age < 28 ? 0.75 : 0.5;
-    const gain = rng.range(0.5, 2.2) * room * ageK * (1 + s.staff.analyst * 0.2);
-    p[t] = Math.min(99, Math.round((p[t] + gain) * 10) / 10);
-    p.form = Math.max(50, p.form - 6);
-    p.fatigue = Math.min(100, p.fatigue + 8);
+    const gain = rng.range(0.5, 2.2) * room * ageK * (1 + s.staff.analyst * 0.2) * (mix ? 0.8 : 1);
+    const k = t as 'atk' | 'def' | 'iq';
+    p[k] = Math.min(99, Math.round((p[k] + gain) * 10) / 10);
+    p.form = Math.max(50, p.form - (mix ? 3 : 6));
+    p.fatigue = Math.min(100, p.fatigue + (mix ? 4 : 8));
   }
   // Соперники тоже растут понемногу
   for (const team of s.teams.filter((x) => !x.human))
@@ -303,8 +328,6 @@ export function applyTraining(s: Season, t: Training) {
       const k = rng.pick(['atk', 'def', 'iq'] as const);
       if (ovr(p) < p.potential) p[k] = Math.min(99, Math.round((p[k] + rng.range(0, 1.2)) * 10) / 10);
     }
-  s.trained = s.week;
-  s.log.unshift(`Неделя ${s.week}: тренировка «${TRAINING_NAMES[t]}».`);
 }
 
 // Итог матча для статистики меты
@@ -370,6 +393,7 @@ const winnerOf = (s: Season, week: number, stage: Stage) =>
 export function finishWeek(s: Season, humanResult?: { winner: string; kills: [number, number] }, humanRec?: MatchRecord) {
   const rng = new Rng(s.seed + s.week * 104729 + s.seasonNo * 7);
   const me = humanTeam(s);
+  applyTraining(s);
   if (humanRec) record(s.meta, humanRec);
   const myFx = humanFixture(s);
   for (const f of s.fixtures.filter((x) => x.week === s.week)) {
