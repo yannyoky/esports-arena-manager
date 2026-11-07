@@ -725,6 +725,15 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
 
 // ---------- Матч ----------
 
+// Камера в матче: следует за дракой или показывает всю карту
+let autoCam = (() => {
+  try {
+    return localStorage.getItem('arena-cam') !== 'full';
+  } catch {
+    return true;
+  }
+})();
+
 function playMatch(m: Match, mode: 'live' | 'replay') {
   const [a, b] = m.setup.teams;
   swap(`<div class="screen match">
@@ -741,6 +750,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       <button data-speed="1" class="on" aria-label="Скорость 1">${ICON.play(18)}<span>1×</span></button>
       <button data-speed="2" aria-label="Скорость 2">${ICON.fast(18)}<span>2×</span></button>
       <button data-speed="4" aria-label="Скорость 4">${ICON.fast(18)}<span>4×</span></button>
+      <button id="cam" class="${autoCam ? 'on' : ''}" aria-label="Камера">${ICON.eye(18)}<span>Камера</span></button>
       <button id="skip" aria-label="К итогам">${ICON.skip(18)}<span>${mode === 'replay' ? 'Выход' : 'Итог'}</span></button>
     </div></div>`);
   const cv = document.getElementById('cv') as HTMLCanvasElement;
@@ -821,7 +831,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
             return `<li style="--c:${col}">${ICON.star(14)}<span>${esc(m.setup.teams[k.side].tag)}: ${NEUTRAL_NAMES[k.type]}</span></li>`;
           }
           const col = SIDE_COLORS[k.victim.side === 0 ? 1 : 0];
-          const killer = k.killer ? img(k.killer.champ, 'xs') : `<span class="core-ic" style="background:${col}"></span>`;
+          const killer = k.killer ? img(k.killer.champ, 'xs') : `<span class="core-ic" style="color:${col}">${ICON.tower(18)}</span>`;
           return `<li style="--c:${col}">${killer}${ICON.sword(12)}${img(k.victim.champ, 'xs dead')}<span>${esc(k.victim.player.nick)}</span></li>`;
         })
         .join('');
@@ -839,7 +849,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       m.step();
       acc -= 1 / 30;
     }
-    drawMatch(ctx, m, cv.width, cv.height, dpr);
+    drawMatch(ctx, m, cv.width, cv.height, dpr, autoCam);
     hud();
     commentary(now);
     if (m.s.over) end();
@@ -872,7 +882,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     m.fxOn = false;
     m.runToEnd();
     m.s.fx = [];
-    drawMatch(ctx, m, cv.width, cv.height, dpr);
+    drawMatch(ctx, m, cv.width, cv.height, dpr, autoCam);
     hud();
     if (mode === 'live') result(m);
     else {
@@ -889,6 +899,15 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       }),
   );
   document.getElementById('skip')!.onclick = end;
+  document.getElementById('cam')!.onclick = (e) => {
+    autoCam = !autoCam;
+    (e.currentTarget as HTMLElement).classList.toggle('on', autoCam);
+    try {
+      localStorage.setItem('arena-cam', autoCam ? 'auto' : 'full');
+    } catch {
+      /* без сохранения */
+    }
+  };
 }
 
 // Подробная статистика: K/D/A, золото, урон, лечение и график золота

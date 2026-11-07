@@ -1,7 +1,7 @@
 // Симуляция матча 5 на 5: три линии, башни, ядра, волны крипов, уровни.
 // Герои действуют по своей роли, стратегии команды и тактике игрока (iq).
 // Симуляция не зависит от отрисовки, поэтому матч можно мгновенно пропустить.
-import { Champion, POS_ROLES, Player, Pos, Role, Team, champById } from './data';
+import { AbilityKind, Champion, POS_ROLES, Player, Pos, Role, Team, champById } from './data';
 import { CAMPS, CORE_POS, H, LaneId, OBJECTIVES, W, lanePoint, nearestT, towerT } from './map';
 import { Rng } from './rng';
 import { BASE_RULES, Patch, Rules, modOf } from './meta';
@@ -138,6 +138,7 @@ export type MatchEvent =
 
 export interface Fx {
   kind: FxKind;
+  ab?: AbilityKind; // эффект конкретного умения
   x: number;
   y: number;
   x2?: number;
@@ -730,12 +731,12 @@ export class Match {
         if (!heroesNear(110).length) return false;
         u.shield += u.maxHp * 0.25;
         for (const e of heroesNear(95)) e.stun = 1.2;
-        this.fx({ kind: 'aoe', x: u.x, y: u.y, r: 95, color: col, t: 0.45 });
+        this.fx({ ab: c.ab, kind: 'aoe', x: u.x, y: u.y, r: 95, color: col, t: 0.45 });
         return true;
       }
       case 'hook': {
         if (!heroT || dist(u, heroT) > 260 || this.underEnemyTower(u.side, u)) return false;
-        this.fx({ kind: 'hook', x: u.x, y: u.y, x2: heroT.x, y2: heroT.y, color: col, t: 0.35 });
+        this.fx({ ab: c.ab, kind: 'hook', x: u.x, y: u.y, x2: heroT.x, y2: heroT.y, color: col, t: 0.35 });
         heroT.x = u.x + u.face * 30;
         heroT.y = u.y;
         heroT.stun = 0.8;
@@ -746,23 +747,23 @@ export class Match {
         const ns = this.foesNear(u, u.x, u.y, 80);
         if (ns.length < 2 && !ns.some((e) => e.kind === 'hero')) return false;
         for (const e of ns) this.damage(u, e, u.dmg * 1.8);
-        this.fx({ kind: 'slash', x: u.x, y: u.y, r: 80, color: col, t: 0.35 });
+        this.fx({ ab: c.ab, kind: 'slash', x: u.x, y: u.y, r: 80, color: col, t: 0.35 });
         return true;
       }
       case 'leap': {
         if (!heroT || dist(u, heroT) > 280) return false;
-        this.fx({ kind: 'dash', x: u.x, y: u.y, x2: heroT.x, y2: heroT.y, color: col, t: 0.3 });
+        this.fx({ ab: c.ab, kind: 'dash', x: u.x, y: u.y, x2: heroT.x, y2: heroT.y, color: col, t: 0.3 });
         u.x = heroT.x - u.face * 24;
         u.y = heroT.y;
         for (const e of this.foesNear(u, heroT.x, heroT.y, 70)) this.damage(u, e, u.dmg * 1.7);
-        this.fx({ kind: 'aoe', x: heroT.x, y: heroT.y, r: 70, color: col, t: 0.35 });
+        this.fx({ ab: c.ab, kind: 'aoe', x: heroT.x, y: heroT.y, r: 70, color: col, t: 0.35 });
         this.s.shake = Math.max(this.s.shake, 0.15);
         return true;
       }
       case 'pierce': {
         if (!target || !inRange || target.kind === 'creep') return false;
         this.damage(u, target, u.dmg * 3, true);
-        this.fx({ kind: 'bolt', x: u.x, y: u.y, x2: target.x, y2: target.y, color: col, t: 0.3 });
+        this.fx({ ab: c.ab, kind: 'bolt', x: u.x, y: u.y, x2: target.x, y2: target.y, color: col, t: 0.3 });
         return true;
       }
       case 'volley': {
@@ -773,7 +774,7 @@ export class Match {
         if (ts.length < 2) return false;
         for (const e of ts) {
           this.damage(u, e, u.dmg * 1.6);
-          this.fx({ kind: 'arrow', x: u.x, y: u.y, x2: e.x, y2: e.y, color: col, t: 0.3 });
+          this.fx({ ab: c.ab, kind: 'arrow', x: u.x, y: u.y, x2: e.x, y2: e.y, color: col, t: 0.3 });
         }
         return true;
       }
@@ -787,7 +788,7 @@ export class Match {
           this.damage(u, e, u.dmg * (frost ? 1.8 : 2.3));
           if (frost && e.kind === 'hero') (e as Unit).stun = Math.max((e as Unit).stun, 0.9);
         }
-        this.fx({ kind: 'aoe', x: target.x, y: target.y, r: 75, color: frost ? '#a7e3ff' : '#ff8a3c', t: 0.5 });
+        this.fx({ ab: c.ab, kind: 'aoe', x: target.x, y: target.y, r: 75, color: frost ? '#a7e3ff' : '#ff8a3c', t: 0.5 });
         this.s.shake = Math.max(this.s.shake, 0.12);
         return true;
       }
@@ -807,7 +808,7 @@ export class Match {
             u.healed += 150 * k;
           }
         }
-        this.fx({ kind: c.ab === 'mend' ? 'heal' : 'ward', x: u.x, y: u.y, r: 160, color: c.ab === 'mend' ? '#8dffb0' : '#ffe08a', t: 0.6 });
+        this.fx({ ab: c.ab, kind: c.ab === 'mend' ? 'heal' : 'ward', x: u.x, y: u.y, r: 160, color: c.ab === 'mend' ? '#8dffb0' : '#ffe08a', t: 0.6 });
         return true;
       }
       case 'dash':
@@ -817,7 +818,7 @@ export class Match {
           .sort((a, b) => a.hp - b.hp)[0];
         if (!weak) return false;
         if (c.ab === 'vanish') u.hidden = 1.2;
-        this.fx({ kind: 'dash', x: u.x, y: u.y, x2: weak.x, y2: weak.y, color: col, t: 0.3 });
+        this.fx({ ab: c.ab, kind: 'dash', x: u.x, y: u.y, x2: weak.x, y2: weak.y, color: col, t: 0.3 });
         u.face = weak.x > u.x ? 1 : -1;
         u.x = weak.x - u.face * 22;
         u.y = weak.y;
