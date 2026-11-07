@@ -10,6 +10,7 @@ import { ICON, crest } from './icons';
 import {
   ACADEMY_COST, ACADEMY_WEEKLY, Deal, Fixture, LEAGUE_WEEKS, ROSTER_MAX, STAFF_INFO, STAFF_MAX, STAGE_NAMES, Season, Stage, StaffRole,
   TRAINING_NAMES, TRAINING_TEXT, Training, acceptChance, asking, setFocus, canTalk, chemistry, chooseSponsor, dropProspect, finishWeek, hireStaff,
+  exportSave, hasBackup, loadBackup, parseSave,
   humanFixture, humanTeam, load, matchRecord, matchSetup, negotiate, newSeason, openAcademy, owner, potentialText, release, roster,
   save, saveReplay, sell, sellPrice, signingBonus, sponsorText, staffCost, staffSalary, standings, startNextSeason, swapStarter,
   teamById, totalWeeks, transferFee, upfront,
@@ -17,6 +18,8 @@ import {
 import { portrait } from './models';
 import { CASTERS, Caster, Line } from './commentary';
 import { drawMatch } from './render';
+import { audioSettings, setAudioMode, setMusic, setVolume, sfx, unlockAudio } from './audio';
+import { juiceOpts, juiceTick, timeScale } from './juice';
 import { Rng } from './rng';
 import { LANE_NAMES } from './map';
 import { MATCH_TIME, Match, NEUTRAL_NAMES, STRATEGY_TEXT, Strategy, autoStrategy } from './sim';
@@ -38,6 +41,67 @@ function swap(html: string, keep = false) {
   }
   app.innerHTML = html;
   if (!keep) app.firstElementChild?.classList.add('enter');
+  setAudioMode('menu');
+}
+
+// Звук: включается по первому касанию, щелчок на кнопках
+document.addEventListener('pointerdown', (e) => {
+  unlockAudio();
+  if ((e.target as HTMLElement).closest('button')) sfx('click');
+});
+juiceOpts.motion = !reduced();
+
+function soundSheet() {
+  const a = audioSettings();
+  const s = sheet(`<h2>Звук</h2>
+    <label class="vol"><span>Громкость</span><input type="range" min="0" max="100" value="${Math.round(a.vol * 100)}" id="vol"><b id="volv">${Math.round(a.vol * 100)}%</b></label>
+    <label class="tog"><input type="checkbox" id="mus" ${a.music ? 'checked' : ''}><span>Музыка в меню и гул арены</span></label>
+    <p class="hint">Эффекты ударов, умений и реакции толпы звучат всегда, если громкость не на нуле. Звук выключается, когда игра свёрнута.</p>
+    <button class="cta wide" id="ok">Готово</button>`);
+  const vol = s.el.querySelector<HTMLInputElement>('#vol')!;
+  vol.oninput = () => {
+    setVolume(+vol.value / 100);
+    s.el.querySelector('#volv')!.textContent = vol.value + '%';
+    const b = document.getElementById('snd');
+    if (b) b.innerHTML = +vol.value ? ICON.sound(18) : ICON.mute(18);
+  };
+  vol.onchange = () => sfx('hit');
+  s.el.querySelector<HTMLInputElement>('#mus')!.onchange = (e) => setMusic((e.target as HTMLInputElement).checked);
+  s.el.querySelector<HTMLButtonElement>('#ok')!.onclick = s.close;
+}
+
+// Подсказки новичку: по одной на экран, пока игрок их не закроет
+const TIPS: Record<string, string> = {
+  home: 'Это штаб клуба. Кнопка матча недели ведёт в драфт: команды по очереди банят и выбирают героев. Потом расстановка по линиям и сам матч. Тренировки идут сами по плану из вкладки «Состав».',
+  roster: 'Нажмите на игрока, чтобы увидеть характеристики, любимых героев и контракт. Уставшие и недовольные игроки играют хуже. План тренировок меняется в блоке ниже.',
+  market: 'Свободных агентов можно подписать сразу, игроков других клубов придётся выкупать. Зарплаты списываются каждую неделю, следите за балансом вверху.',
+  club: 'Персонал усиливает команду, спонсор и болельщики приносят деньги, академия растит таланты. Здесь же повторы матчей и сохранение игры в файл.',
+  table: 'Лучшие команды лиги после 10 недель выходят в плей-офф, а чемпион едет на Кубок мира.',
+  meta: 'Каждые 3 недели выходит патч: самые популярные и сильные герои слабеют, забытые усиливаются. Тиры подскажут, кого брать в драфте.',
+};
+const tipsSeen = (() => {
+  try {
+    return new Set<string>(JSON.parse(localStorage.getItem('arena-tips') || '[]'));
+  } catch {
+    return new Set<string>();
+  }
+})();
+function tipHtml(id: string) {
+  if (!TIPS[id] || tipsSeen.has(id)) return '';
+  return `<aside class="tip" data-tip="${id}"><span class="tip-i">?</span><p>${TIPS[id]}</p><button class="tip-x" aria-label="Понятно">Понятно</button></aside>`;
+}
+function bindTips() {
+  app.querySelectorAll<HTMLElement>('.tip').forEach((el) => {
+    el.querySelector<HTMLButtonElement>('.tip-x')!.onclick = () => {
+      tipsSeen.add(el.dataset.tip!);
+      try {
+        localStorage.setItem('arena-tips', JSON.stringify([...tipsSeen]));
+      } catch {
+        /* без сохранения */
+      }
+      el.remove();
+    };
+  });
 }
 
 function shell(active: string, body: string) {
@@ -54,13 +118,15 @@ function shell(active: string, body: string) {
   swap(`<div class="screen">
     <header class="top">
       <div class="brand">${crest(me.color, me.tag, 30)}<span>${esc(me.name)}</span></div>
-      <div class="meta"><span>С${season.seasonNo} · ${when}</span><span class="money ${season.money < 0 ? 'neg' : ''}">${ICON.coin(16)}${season.money.toLocaleString('ru')}</span></div>
+      <div class="meta"><span>С${season.seasonNo} · ${when}</span><span class="money ${season.money < 0 ? 'neg' : ''}">${ICON.coin(16)}${season.money.toLocaleString('ru')}</span><button class="snd" id="snd" aria-label="Звук">${audioSettings().vol > 0 ? ICON.sound(18) : ICON.mute(18)}</button></div>
     </header>
-    <main>${body}</main>
+    <main>${tipHtml(active)}${body}</main>
     <nav class="tabs">${tabs
       .map(([id, label, ic]) => `<button data-tab="${id}" class="${active === id ? 'on' : ''}">${ic}<span>${label}</span></button>`)
       .join('')}</nav></div>`);
   app.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach((b) => (b.onclick = () => go(b.dataset.tab!)));
+  document.getElementById('snd')!.onclick = soundSheet;
+  bindTips();
 }
 
 function go(tab: string) {
@@ -400,6 +466,12 @@ function club() {
     <section class="block"><h3>Повторы матчей</h3>${season.replays.length
       ? season.replays.map((r) => `<button class="prow" data-r="${r.id}"><span class="posl">${ICON.play(14)}</span><div class="pmain"><b>${esc(r.label)}</b></div></button>`).join('')
       : '<p class="dim small">Здесь появятся ваши последние матчи.</p>'}</section>
+    <section class="block"><h3>Сохранение</h3>
+      <p class="dim small">Игра сохраняется сама после каждого действия. Файл сохранения можно перенести на другое устройство или оставить на всякий случай.</p>
+      <div class="acts-row"><button class="chip on" id="exp">${ICON.save(16)}Сохранить в файл</button><button class="chip" id="imp">Загрузить из файла</button></div>
+      ${hasBackup() ? '<button class="chip" id="bak">Вернуть начало прошлой недели</button>' : ''}
+      <input type="file" id="impf" accept=".json,application/json" hidden>
+    </section>
     <section class="block"><h3>История клуба</h3>${season.history.length
       ? season.history.map((h) => `<div class="row"><span>Сезон ${h.season}</span><span>${h.place}-е место${h.titles.length ? ' · ' + h.titles.length + ' ' + ICON.star(14) : ''}</span></div>`).join('')
       : '<p class="dim small">Первый сезон клуба ещё идёт.</p>'}</section>`);
@@ -420,10 +492,62 @@ function club() {
       club();
     };
   on('[data-p]', (el) => prospectSheet(findPlayer(el.dataset.p!)));
+  saveControls();
   on('[data-r]', (el) => {
     const r = season.replays.find((x) => x.id === el.dataset.r)!;
     playMatch(new Match(JSON.parse(JSON.stringify(r.setup))), 'replay');
   });
+}
+
+// Экспорт и загрузка сохранения
+function saveControls() {
+  const replace = (s: typeof season, msg: string) => {
+    const c = sheet(`<h2>Заменить текущую игру?</h2><p class="dim">${msg}</p><button class="cta wide" id="yes">Заменить</button>`);
+    c.el.querySelector<HTMLButtonElement>('#yes')!.onclick = () => {
+      season = s;
+      save(season);
+      c.close();
+      toast('Сохранение загружено');
+      home();
+    };
+  };
+  document.getElementById('exp')!.onclick = async () => {
+    const text = exportSave(season);
+    const name = `arena-manager-s${season.seasonNo}-w${season.week}.json`;
+    const file = new File([text], name, { type: 'application/json' });
+    try {
+      if (navigator.canShare?.({ files: [file] })) {
+        await navigator.share({ files: [file], title: 'Сохранение Арена Менеджер' });
+        return;
+      }
+    } catch {
+      /* отменили или не поддерживается: скачиваем */
+    }
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(file);
+    a.download = name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    toast('Файл сохранения скачан');
+  };
+  const input = document.getElementById('impf') as HTMLInputElement;
+  document.getElementById('imp')!.onclick = () => input.click();
+  input.onchange = async () => {
+    const f = input.files?.[0];
+    if (!f) return;
+    const s = parseSave(await f.text());
+    input.value = '';
+    if (!s) return toast('Не получилось прочитать файл: это не сохранение игры или оно от более новой версии');
+    const me = s.teams.find((t) => t.human)!;
+    replace(s, `В файле: ${esc(me.name)}, сезон ${s.seasonNo}, неделя ${s.week}. Текущий прогресс будет заменён.`);
+  };
+  const bak = document.getElementById('bak');
+  if (bak)
+    bak.onclick = () => {
+      const s = loadBackup();
+      if (!s) return toast('Резервная копия повреждена');
+      replace(s, `Игра вернётся к сезону ${s.seasonNo}, неделе ${s.week}. Всё, что было после, пропадёт.`);
+    };
 }
 
 function prospectSheet(p: Player) {
@@ -753,6 +877,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       <button id="cam" class="${autoCam ? 'on' : ''}" aria-label="Камера">${ICON.eye(18)}<span>Камера</span></button>
       <button id="skip" aria-label="К итогам">${ICON.skip(18)}<span>${mode === 'replay' ? 'Выход' : 'Итог'}</span></button>
     </div></div>`);
+  setAudioMode('match');
   const cv = document.getElementById('cv') as HTMLCanvasElement;
   const ctx = cv.getContext('2d')!;
   let speed = 1;
@@ -805,16 +930,26 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
   resize();
   window.addEventListener('resize', resize);
 
+  // Меняем DOM, только когда текст действительно изменился: меньше перерисовок страницы
+  const shown: Record<string, string> = {};
+  const put = (id: string, v: string, html = false) => {
+    if (shown[id] === v) return;
+    shown[id] = v;
+    const el = document.getElementById(id);
+    if (!el) return;
+    if (html) el.innerHTML = v;
+    else el.textContent = v;
+  };
   const hud = () => {
-    document.getElementById('k0')!.textContent = String(m.s.kills[0]);
-    document.getElementById('k1')!.textContent = String(m.s.kills[1]);
+    put('k0', String(m.s.kills[0]));
+    put('k1', String(m.s.kills[1]));
     const left = Math.max(0, MATCH_TIME - m.s.time);
-    document.getElementById('clock')!.textContent = `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}`;
+    put('clock', `${Math.floor(left / 60)}:${String(Math.floor(left % 60)).padStart(2, '0')}`);
     for (const sd of [0, 1] as const) {
       const bits = [`${ICON.tower(13)}${m.s.towersDown[sd]}`];
       if (m.s.spirit[sd]) bits.push(`<i class="buff sp">Дух ×${m.s.spirit[sd]}</i>`);
       if (m.s.siege[sd] > 0) bits.push(`<i class="buff cl">Колосс ${Math.ceil(m.s.siege[sd])}</i>`);
-      document.getElementById('o' + sd)!.innerHTML = bits.join('');
+      put('o' + sd, bits.join(''), true);
     }
     const key = m.s.feed.length + (m.s.feed[0]?.t ?? 0);
     if (key !== feedLen) {
@@ -844,7 +979,8 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     const dt = (now - last) / 1000;
     if (dt < 1 / 31) return;
     last = now;
-    acc += Math.min(dt, 0.25) * speed;
+    juiceTick(m, now, speed);
+    acc += Math.min(dt, 0.25) * speed * timeScale(m, now);
     while (acc >= 1 / 30 && !m.s.over) {
       m.step();
       acc -= 1 / 30;
@@ -945,6 +1081,7 @@ function result(m: Match) {
   const s = m.s;
   const winner = m.setup.teams[s.winner as 0 | 1];
   const won = winner.id === me.id;
+  sfx(won ? 'win' : 'lose');
   const fx = humanFixture(season)!;
   const opp = m.setup.teams.find((t) => t.id !== me.id)!;
   const overlay = document.createElement('div');
@@ -967,5 +1104,6 @@ function result(m: Match) {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) save(season);
 });
+window.addEventListener('pagehide', () => save(season));
 
 home();

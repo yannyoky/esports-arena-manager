@@ -107,7 +107,12 @@ export interface Season {
   expiring: string[]; // у кого закончился контракт (в межсезонье)
 }
 
-const SAVE_KEY = 'arena-manager-save-v5';
+// Сохранение живёт под постоянным ключом; номер версии хранится внутри.
+// При обновлении игры старые сохранения переводятся цепочкой миграций, а не стираются.
+const SAVE_KEY = 'arena-manager-save';
+const BACKUP_KEY = 'arena-manager-save-backup';
+const LEGACY_KEYS = ['arena-manager-save-v5'];
+export const SAVE_VERSION = 5;
 export const LEAGUE_WEEKS = 10;
 export const ROSTER_MAX = 7;
 export const ACADEMY_MAX = 4;
@@ -214,30 +219,99 @@ export function newSeason(seed = Date.now() % 1e9): Season {
 
 export const totalWeeks = (_s: Season) => LEAGUE_WEEKS + 4;
 
+// Шаги миграции: MIGRATE[n] переводит сохранение версии n в версию n + 1.
+// Когда формат меняется, увеличьте SAVE_VERSION и добавьте шаг сюда.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const MIGRATE: Record<number, (s: any) => any> = {};
+
+// Недостающие поля берём из нового сезона: так переживают мелкие добавления
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function fillDefaults(s: any): Season {
+  const base = newSeason(s.seed ?? 1) as unknown as Record<string, unknown>;
+  for (const [k, v] of Object.entries(base)) if (s[k] === undefined) s[k] = v;
+  s.focus ??= 'mix';
+  return s as Season;
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function valid(s: any): s is Season {
+  return !!s && typeof s === 'object' && Array.isArray(s.teams) && s.teams.some((t: Team) => t?.human) && Array.isArray(s.fixtures) && typeof s.week === 'number';
+}
+
+// Разбор сохранения из текста: проверка, миграции, значения по умолчанию
+export function parseSave(raw: string): Season | null {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    let s: any = JSON.parse(raw);
+    if (s && s.kind === 'arena-manager-save' && s.data) s = s.data; // файл экспорта
+    if (!s || typeof s.version !== 'number' || s.version > SAVE_VERSION) return null;
+    while (s.version < SAVE_VERSION) {
+      const step = MIGRATE[s.version];
+      if (!step) return null;
+      s = step(s);
+      s.version++;
+    }
+    return valid(s) ? fillDefaults(s) : null;
+  } catch {
+    return null;
+  }
+}
+
+const read = (k: string) => {
+  try {
+    return localStorage.getItem(k);
+  } catch {
+    return null;
+  }
+};
+
+let backupMark = '';
 export function save(s: Season) {
   try {
-    localStorage.setItem(SAVE_KEY, JSON.stringify(s));
+    const json = JSON.stringify(s);
+    // резервная копия: состояние на начало прошлой недели (или прошлой сессии)
+    const mark = s.seasonNo + ':' + s.week;
+    if (mark !== backupMark) {
+      const prev = localStorage.getItem(SAVE_KEY);
+      if (prev && prev !== json) localStorage.setItem(BACKUP_KEY, prev);
+      backupMark = mark;
+    }
+    try {
+      localStorage.setItem(SAVE_KEY, json);
+    } catch {
+      // места не хватило: повторы не главное, сохраняем без них
+      localStorage.removeItem(BACKUP_KEY);
+      localStorage.setItem(SAVE_KEY, JSON.stringify({ ...s, replays: [] }));
+    }
   } catch {
     /* хранилище недоступно — играем без сохранения */
   }
 }
 
 export function load(): Season | null {
-  try {
-    const raw = localStorage.getItem(SAVE_KEY);
-    if (!raw) return null;
-    const s = JSON.parse(raw) as Season;
-    if (s.version !== 5) return null;
-    s.focus ??= 'mix';
-    return s;
-  } catch {
-    return null;
+  for (const k of [SAVE_KEY, BACKUP_KEY, ...LEGACY_KEYS]) {
+    const raw = read(k);
+    const s = raw ? parseSave(raw) : null;
+    if (s) return s;
   }
+  return null;
+}
+
+export const hasBackup = () => !!read(BACKUP_KEY);
+export function loadBackup(): Season | null {
+  const raw = read(BACKUP_KEY);
+  return raw ? parseSave(raw) : null;
+}
+
+// Текст для файла экспорта
+export function exportSave(s: Season): string {
+  return JSON.stringify({ kind: 'arena-manager-save', exported: new Date().toISOString(), data: s });
 }
 
 export function clearSave() {
   try {
     localStorage.removeItem(SAVE_KEY);
+    for (const k of LEGACY_KEYS) localStorage.removeItem(k);
   } catch {
     /* ignore */
   }

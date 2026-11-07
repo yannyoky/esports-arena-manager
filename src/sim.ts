@@ -534,8 +534,21 @@ export class Match {
     const smart = u.player.iq / 100;
     let best: Unit | null = null;
     let bs = Infinity;
+    const allies = this.aliveHeroes(u.side);
+    const guard = u.champ.role === 'tank' || u.champ.role === 'support';
     for (const e of this.visibleEnemies(u, r)) {
-      const score = dist(u, e) * (1 - smart * 0.5) + (e.hp / e.maxHp) * 220 * smart;
+      // Оценка цели: близость и здоровье плюс командные соображения.
+      // Чем умнее игрок, тем больше он думает о фокусе, защите союзников и добивании.
+      let score = dist(u, e) * (1 - smart * 0.5) + (e.hp / e.maxHp) * 220 * smart;
+      const focus = allies.filter((a) => a !== u && a.intent.kind === 'attack' && a.intent.target === e).length;
+      score -= Math.min(3, focus) * 35 * smart;
+      const squishy = e.champ.role === 'shooter' || e.champ.role === 'mage' || e.champ.role === 'support';
+      if (squishy) score -= (u.champ.role === 'assassin' ? 70 : 20) * smart;
+      if (e.hp < u.dmg * 2.2) score -= 60 * smart;
+      if (guard && e.intent.kind === 'attack') {
+        const victim = e.intent.target as Unit;
+        if (victim.kind === 'hero' && victim.side === u.side && victim !== u && victim.champ.role !== 'tank' && dist(victim, u) < 260) score -= 90 * smart;
+      }
       if (score < bs) {
         bs = score;
         best = e;
@@ -556,6 +569,8 @@ export class Match {
     // Отступление: умный игрок уходит раньше, страж держится дольше
     const retreatAt = (u.champ.role === 'tank' ? 0.08 : 0.12) + iq * 0.1;
     if (u.hp < u.maxHp * retreatAt) u.retreating = true;
+    // Умный игрок не ждёт последней капли: при меньшинстве рядом уходит раньше
+    else if (iq > 0.55 && u.hp < u.maxHp * 0.3 && this.visibleEnemies(u, 300).length && this.advantage(u.side, u.x, u.y) < 0.6) u.retreating = true;
     if (u.retreating) {
       if (u.hp > u.maxHp * 0.92) u.retreating = false;
       else return (u.intent = { kind: 'home' });

@@ -2,6 +2,7 @@
 // каждый кадр поверх неё рисуются только герои и эффекты. Не больше 30 кадров/с.
 import { SIDE_COLORS } from './data';
 import { drawHero } from './models';
+import { punchOf, shakeOffset } from './juice';
 import { CAMPS, LANE_PTS, OBJECTIVES, riverX } from './map';
 import { CORE_HP, Creep, Fx, H, Match, Neutral, Tower, Unit, W } from './sim';
 import { Rng } from './rng';
@@ -875,6 +876,12 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, p: [number, number], t
     ctx.stroke();
   }
   ctx.scale(heroScale, heroScale);
+  // отдача от удара: героя чуть отбрасывает назад и сплющивает
+  if (u.flash > 0) {
+    const k = u.flash / 0.15;
+    ctx.translate(-u.face * k * k * 4, 0);
+    ctx.scale(1 + 0.08 * k, 1 - 0.08 * k);
+  }
   drawHero(ctx, u.champ, { t: t + u.homeY, moving: u.moving, swing: u.swing, cast: u.cast, flash: u.flash, face: u.face });
   ctx.restore();
   ctx.globalAlpha = 1;
@@ -1245,9 +1252,30 @@ function updateCam(m: Match, v: View, auto: boolean): Cam {
   if (auto) {
     const alive = m.s.units.filter((u) => u.dead <= 0);
     const hot = alive.filter((u) => u.calm < 1.5);
-    const group = hot.length >= 2 ? hot : alive;
-    if (group.length) {
-      const pts = group.map((u) => P(v, u.x, u.y));
+    // Главная драка: берём героя, вокруг которого больше всего сражающихся,
+    // и показываем только эту группу, а не всю карту сразу
+    let group = alive;
+    if (hot.length >= 2) {
+      let best = hot[0];
+      let bn = -1;
+      for (const h of hot) {
+        const nb = hot.filter((o) => Math.hypot(o.x - h.x, o.y - h.y) < 320).length;
+        if (nb > bn) {
+          bn = nb;
+          best = h;
+        }
+      }
+      group = hot.filter((o) => Math.hypot(o.x - best.x, o.y - best.y) < 380);
+      if (group.length < 2) group = hot;
+    }
+    // Свежее убийство (последние 1.5 с) держим в кадре
+    const ev = m.s.events;
+    const pts = group.map((u) => P(v, u.x, u.y));
+    for (let i = ev.length - 1; i >= 0 && i >= ev.length - 4; i--) {
+      const e = ev[i];
+      if ((e.kind === 'kill' || e.kind === 'first') && m.s.time - e.t < 1.5) pts.push(P(v, e.victim.x, e.victim.y));
+    }
+    if (pts.length) {
       const minX = Math.min(...pts.map((p) => p[0]));
       const maxX = Math.max(...pts.map((p) => p[0]));
       const minY = Math.min(...pts.map((p) => p[1]));
@@ -1255,6 +1283,12 @@ function updateCam(m: Match, v: View, auto: boolean): Cam {
       const pad = 120 * v.k;
       const z = Math.max(1, Math.min(1.7, Math.min(v.cw / (maxX - minX + pad * 2), v.ch / (maxY - minY + pad * 2))));
       target = { x: (minX + maxX) / 2, y: (minY + maxY) / 2 - 20 * v.k, z: hot.length >= 2 ? z : Math.min(z, 1.25) };
+      // Мёртвая зона: мелкие сдвиги не дёргают камеру
+      const dz = 40 * v.k;
+      const dx = target.x - cam.x;
+      const dy = target.y - cam.y;
+      target.x = Math.abs(dx) < dz ? cam.x : target.x - Math.sign(dx) * dz;
+      target.y = Math.abs(dy) < dz ? cam.y : target.y - Math.sign(dy) * dz;
     }
   }
   cam.z += (target.z - cam.z) * 0.05;
@@ -1276,9 +1310,14 @@ export function drawMatch(ctx: CanvasRenderingContext2D, m: Match, cw: number, c
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.fillStyle = '#120f17';
   ctx.fillRect(0, 0, cw, ch);
-  ctx.setTransform(cam.z, 0, 0, cam.z, cw / 2 - cam.z * cam.x, ch / 2 - cam.z * cam.y);
-  const shake = s.shake > 0 ? s.shake * 30 * v.k : 0;
-  if (shake) ctx.translate((Math.random() - 0.5) * shake, (Math.random() - 0.5) * shake);
+  const z = cam.z * (1 + punchOf(m));
+  const [sx, sy, sr] = shakeOffset(m, v.k);
+  ctx.setTransform(z, 0, 0, z, cw / 2 - z * cam.x + sx, ch / 2 - z * cam.y + sy);
+  if (sr) {
+    ctx.translate(cam.x, cam.y);
+    ctx.rotate(sr);
+    ctx.translate(-cam.x, -cam.y);
+  }
   ctx.drawImage(getMap(v), 0, 0, cw, ch);
 
   // Блики на воде
@@ -1453,15 +1492,22 @@ export function drawMatch(ctx: CanvasRenderingContext2D, m: Match, cw: number, c
       }
       ctx.globalAlpha = 1;
     } else if (f.kind === 'text') {
-      ctx.globalAlpha = Math.min(1, (f.t / f.life) * 2);
-      ctx.font = `800 ${Math.round(14 * Math.max(1, dpr * 0.7))}px "Russo One", system-ui, sans-serif`;
+      // цифра выскакивает с перелётом и плавно уплывает вверх; крупный урон крупнее
+      const val = Math.abs(parseInt(f.text!, 10)) || 0;
+      const big = Math.min(1, val / 220) + (f.color === '#ffd166' ? 0.35 : 0);
+      const pop = p < 0.12 ? 0.6 + (p / 0.12) * 0.75 : p < 0.25 ? 1.35 - ((p - 0.12) / 0.13) * 0.35 : 1;
+      const drift = 1 - (1 - p) * (1 - p);
+      const side = ((f.x * 13 + f.y * 7) % 2 > 1 ? 1 : -1) * 10 * heroScale;
+      ctx.globalAlpha = Math.min(1, (f.t / f.life) * 2.5);
+      ctx.font = `800 ${Math.round((12 + big * 8) * pop * Math.max(1, dpr * 0.7))}px "Russo One", system-ui, sans-serif`;
       ctx.textAlign = 'center';
-      ctx.lineWidth = 3;
-      ctx.strokeStyle = 'rgba(10,8,14,0.8)';
-      const ty = a[1] - 40 * heroScale - p * 26;
-      ctx.strokeText(f.text!, a[0], ty);
+      ctx.lineWidth = 3.5;
+      ctx.strokeStyle = 'rgba(10,8,14,0.85)';
+      const tx = a[0] + side * drift;
+      const ty = a[1] - 40 * heroScale - drift * 30;
+      ctx.strokeText(f.text!, tx, ty);
       ctx.fillStyle = f.color;
-      ctx.fillText(f.text!, a[0], ty);
+      ctx.fillText(f.text!, tx, ty);
       ctx.globalAlpha = 1;
     } else if (f.kind === 'death') {
       // кольцо по земле, искры и душа, улетающая вверх

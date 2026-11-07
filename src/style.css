@@ -410,3 +410,24 @@ button.sponsor:active { transform: scale(0.98); }
   .cast { transition: opacity 160ms linear; transform: none; }
 }
 .ctrl button span { font-size: 13px; } .ctrl { gap: 6px; } .ctrl button { gap: 4px; }
+
+/* Звук */
+.top .meta { align-items: center; }
+.snd { display: inline-grid; place-items: center; width: 34px; height: 34px; margin-left: 6px; border-radius: 10px; background: rgba(255,255,255,.06); color: inherit; border: 0; }
+.vol { display: grid; grid-template-columns: auto 1fr 3.2em; gap: 10px; align-items: center; margin: 14px 0; }
+.vol input { width: 100%; accent-color: var(--stage); }
+.vol b { text-align: right; font-variant-numeric: tabular-nums; }
+.tog { display: flex; gap: 10px; align-items: center; margin: 8px 0 14px; }
+.tog input { width: 20px; height: 20px; accent-color: var(--stage); }
+
+/* Удобство на телефоне: кнопки не меньше 40 px, подписи крупнее */
+button.chip { min-height: 40px; padding: 8px 14px; gap: 6px; }
+.snd { width: 40px; height: 40px; }
+.tabs button span { font-size: 12px; }
+.posl { font-size: 12px; }
+
+/* Подсказка новичку */
+.tip { display: grid; grid-template-columns: auto 1fr; gap: 6px 10px; align-items: start; background: color-mix(in srgb, var(--stage) 14%, var(--panel)); border: 1px solid color-mix(in srgb, var(--stage) 40%, transparent); border-radius: 14px; padding: 12px; font-size: 14px; line-height: 1.45; }
+.tip p { margin: 0; }
+.tip-i { display: grid; place-items: center; width: 24px; height: 24px; border-radius: 50%; background: var(--stage); color: var(--stage-ink); font-weight: 700; }
+.tip-x { grid-column: 2; justify-self: start; min-height: 40px; padding: 8px 16px; border-radius: 10px; background: var(--stage); color: var(--stage-ink); font-weight: 600; border: 0; }
