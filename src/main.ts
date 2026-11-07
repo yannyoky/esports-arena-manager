@@ -328,7 +328,7 @@ function home() {
     .map((f) => `<i class="${f.result!.winner === me.id ? 'w' : 'l'}"></i>`)
     .join('');
   const strip = `<div class="strip">
-    <div><small>Место</small><b>${place}<em>/${standings(season).length}</em></b></div>
+    <div><small>Место</small><b>${form ? place : '—'}<em>/${standings(season).length}</em></b></div>
     <div><small>Форма</small><span class="form">${form || '<em>—</em>'}</span></div>
     <div><small>Доверие</small><b>${season.trust}<em>%</em></b></div></div>`;
   const goalsDone = season.goals.filter((g) => goalNow(season, g).ok).length;
@@ -336,7 +336,7 @@ function home() {
   const n = nextPatchIn();
   const rows = [
     !season.sponsor ? `<button class="qrow hot" id="sp">${ICON.coin(18)}<b>Выберите спонсора</b><span>нет дохода</span>${CHEV}</button>` : '',
-    season.goals.length ? `<button class="qrow" id="goals">${ICON.table(18)}<b>Цели владельца</b><span>${goalsDone} из ${season.goals.length}</span>${CHEV}</button>` : '',
+    season.goals.length ? `<button class="qrow" id="goals">${ICON.table(18)}<b>Цели владельца</b><span>в норме ${goalsDone} из ${season.goals.length}</span>${CHEV}</button>` : '',
     `<button class="qrow ${season.unseenPatch ? 'hot' : ''}" id="patch">${ICON.meta(18)}<b>${season.unseenPatch ? 'Новый патч ' : 'Патч '}${p.ver}</b><span>${n ? `след. через ${n} нед.` : 'последний'}</span>${CHEV}</button>`,
     `<button class="qrow" id="focus">${TRAIN_ICON[season.focus].replace('width="22" height="22"', 'width="18" height="18"')}<b>Тренировки</b><span>${TRAINING_SHORT[season.focus]}</span>${CHEV}</button>`,
   ].join('');
@@ -571,11 +571,12 @@ function market() {
       : season.teams.filter((t) => !t.human && !t.foreign).flatMap((t) => t.players);
   const shown = list.filter((p) => marketPos === -1 || p.pos === marketPos).sort((a, b) => ovr(b) - ovr(a));
   shell('market', `
-    <section class="block">
-      <div class="seg">${(['free', 'clubs'] as const).map((k) => `<button class="chip ${marketTab === k ? 'on' : ''}" data-mt="${k}">${k === 'free' ? 'Свободные агенты' : 'Игроки клубов'}</button>`).join('')}</div>
-      <div class="seg">${[-1, 0, 1, 2, 3, 4].map((i) => `<button class="chip ${marketPos === i ? 'on' : ''}" data-mp="${i}">${i < 0 ? 'Все' : POS_NAMES[i]}</button>`).join('')}</div>
-      <p class="dim small">${marketTab === 'free' ? 'Свободным агентам нужны только подъёмные. Список обновляется каждую неделю.' : 'Клуб отпустит игрока за трансферную сумму.'} В составе ${roster(me).length}/${ROSTER_MAX}.</p>
-    </section>
+    ${segTabs('mt', marketTab, [
+      ['free', 'Свободные'],
+      ['clubs', 'Из клубов'],
+    ])}
+    <div class="chipscroll">${[-1, 0, 1, 2, 3, 4].map((i) => `<button class="chip ${marketPos === i ? 'on' : ''}" data-mp="${i}">${i < 0 ? 'Все' : POS_NAMES[i]}</button>`).join('')}</div>
+    <p class="dim small mnote">${marketTab === 'free' ? 'Цена = подъёмные при подписании, список новый каждую неделю.' : 'Цена = трансфер, клуб отпустит игрока за эту сумму.'} В составе ${roster(me).length}/${ROSTER_MAX}.</p>
     <section class="block">${shown
       .map((p) => {
         const t = owner(season, p);
@@ -583,7 +584,7 @@ function market() {
         return playerRow(p, `<em class="price">${t ? `<small>${esc(t.tag)}</small>` : ''}${price.toLocaleString('ru')}</em>`);
       })
       .join('') || '<p class="dim small">Никого нет.</p>'}</section>`);
-  on('[data-mt]', (b) => ((marketTab = b.dataset.mt as 'free' | 'clubs'), market()));
+  bindSeg('mt', (v) => ((marketTab = v as 'free' | 'clubs'), market()));
   on('[data-mp]', (b) => ((marketPos = +b.dataset.mp! as Pos | -1), market()));
   on('[data-p]', (el) => {
     const p = findPlayer(el.dataset.p!);
