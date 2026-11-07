@@ -15,6 +15,7 @@ import {
   teamById, totalWeeks, transferFee, upfront,
 } from './league';
 import { portrait } from './models';
+import { CASTERS, Caster, Line } from './commentary';
 import { drawMatch } from './render';
 import { Rng } from './rng';
 import { LANE_NAMES } from './map';
@@ -733,7 +734,9 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       <div class="t r"><b>${esc(b.tag)}</b>${crest(SIDE_COLORS[1], b.tag, 26)}</div>
     </div>
     <div class="objs"><span id="o0"></span><span id="o1"></span></div>
-    <div class="field"><canvas id="cv"></canvas><ul class="feed" id="feed"></ul></div>
+    <div class="field"><canvas id="cv"></canvas><ul class="feed" id="feed"></ul>
+      <div class="banner" id="banner" aria-hidden="true"></div>
+      <div class="cast" id="cast" aria-live="polite"></div></div>
     <div class="ctrl">
       <button data-speed="1" class="on" aria-label="Скорость 1">${ICON.play(18)}<span>1×</span></button>
       <button data-speed="2" aria-label="Скорость 2">${ICON.fast(18)}<span>2×</span></button>
@@ -749,6 +752,39 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
   let running = true;
   let dpr = 1;
   let feedLen = 0;
+  // Комментаторы: очередь реплик, каждая держится на экране пару секунд
+  const caster = new Caster(m);
+  let queue: Line[] = [];
+  let lineUntil = 0;
+  let bannerUntil = 0;
+  const castEl = () => document.getElementById('cast');
+  const commentary = (now: number) => {
+    for (const l of caster.poll()) {
+      if (l.banner) {
+        const b = document.getElementById('banner')!;
+        b.textContent = l.banner;
+        b.style.setProperty('--c', SIDE_COLORS[l.side ?? 0]);
+        b.classList.remove('show');
+        void b.offsetWidth;
+        b.classList.add('show');
+        bannerUntil = now + 1800;
+      }
+      queue.push(l);
+    }
+    // важное вперёд, лишнее отбрасываем
+    queue.sort((a, b) => b.prio - a.prio);
+    queue = queue.slice(0, 3);
+    if (now > lineUntil && queue.length) {
+      const l = queue.shift()!;
+      const el = castEl()!;
+      el.innerHTML = `<b class="c${l.who}">${CASTERS[l.who]}</b><span>${esc(l.text)}</span>`;
+      el.classList.remove('show');
+      void el.offsetWidth;
+      el.classList.add('show');
+      lineUntil = now + Math.max(2200, l.text.length * 45);
+    } else if (now > lineUntil + 2500) castEl()?.classList.remove('show');
+    if (now > bannerUntil) document.getElementById('banner')?.classList.remove('show');
+  };
 
   const resize = () => {
     dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -805,6 +841,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     }
     drawMatch(ctx, m, cv.width, cv.height, dpr);
     hud();
+    commentary(now);
     if (m.s.over) end();
   };
   raf = requestAnimationFrame(frame);

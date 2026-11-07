@@ -379,3 +379,32 @@ button.sponsor:active { transform: scale(0.98); }
 .opt small { color: var(--muted); font-weight: 400; font-size: 12px; line-height: 1.3; }
 .opt.on { box-shadow: inset 0 0 0 2px var(--stage); background: color-mix(in srgb, var(--stage) 12%, var(--panel-2)); }
 .patch-card .pc-top .ico { width: 18px; height: 18px; }
+
+/* ---------- Комментаторы и баннеры ---------- */
+.cast {
+  position: absolute; left: max(8px, env(safe-area-inset-left)); right: max(8px, env(safe-area-inset-right)); bottom: 8px;
+  display: flex; gap: 8px; align-items: baseline; padding: 8px 12px; border-radius: 12px;
+  background: rgba(15, 12, 20, 0.86); box-shadow: 0 8px 24px -10px #000; font-size: 13px; line-height: 1.35;
+  opacity: 0; transform: translateY(8px); transition: opacity 220ms var(--ease), transform 220ms var(--ease); pointer-events: none;
+}
+.cast.show { opacity: 1; transform: none; }
+.cast b { flex: none; font-family: var(--display); font-weight: 400; font-size: 12px; }
+.cast b.c0 { color: var(--stage); }
+.cast b.c1 { color: #7fe6d4; }
+.banner {
+  position: absolute; left: 50%; top: 38%; transform: translate(-50%, -50%) scale(0.8); opacity: 0; pointer-events: none;
+  font-family: var(--display); font-size: clamp(22px, 7vw, 40px); color: #fff; text-transform: uppercase; white-space: nowrap;
+  text-shadow: 0 0 18px var(--c), 0 2px 0 rgba(0, 0, 0, 0.6); letter-spacing: 0.02em;
+}
+.banner::after { content: ''; display: block; height: 3px; margin-top: 4px; background: linear-gradient(90deg, transparent, var(--c), transparent); }
+.banner.show { animation: bannerin 1800ms var(--ease) forwards; }
+@keyframes bannerin {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(1.4); }
+  12% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  80% { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  100% { opacity: 0; transform: translate(-50%, -60%) scale(0.96); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .banner.show { animation: fade 1800ms linear forwards; transform: translate(-50%, -50%); }
+  .cast { transition: opacity 160ms linear; transform: none; }
+}

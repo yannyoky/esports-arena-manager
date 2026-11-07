@@ -56,7 +56,7 @@ const DECOR = (() => {
     return true;
   };
   let tries = 0;
-  while (items.length < 46 && tries++ < 3000) {
+  while (items.length < 60 && tries++ < 3000) {
     const x = r.range(10, 990);
     const y = r.range(10, 590);
     if (!clear(x, y)) continue;
@@ -80,8 +80,54 @@ function paintMap(ctx: CanvasRenderingContext2D) {
     const s = r.range(2, 7);
     ctx.fillRect(r.range(0, W), r.range(0, H), s, s * 0.6);
   }
+  // Пятна света и тени на траве
+  for (let i = 0; i < 26; i++) {
+    const x = r.range(0, W);
+    const y = r.range(0, H);
+    const rr = r.range(30, 80);
+    const gg = ctx.createRadialGradient(x, y, 0, x, y, rr);
+    const light = r.next() < 0.5;
+    gg.addColorStop(0, light ? 'rgba(150,190,100,0.10)' : 'rgba(5,15,8,0.18)');
+    gg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = gg;
+    ctx.fillRect(x - rr, y - rr, rr * 2, rr * 2);
+  }
+  // Пучки травы
+  ctx.lineWidth = 1.2;
+  for (let i = 0; i < 520; i++) {
+    const x = r.range(0, W);
+    const y = r.range(0, H);
+    ctx.strokeStyle = r.next() < 0.5 ? 'rgba(130,180,90,0.35)' : 'rgba(80,130,70,0.4)';
+    ctx.beginPath();
+    ctx.moveTo(x - 2, y - 3);
+    ctx.lineTo(x, y + 1);
+    ctx.lineTo(x + 2, y - 3);
+    ctx.stroke();
+  }
+  // Цветы
+  const FLOWERS = ['#f2d36b', '#e88ab5', '#c9b8ff', '#ffffff'];
+  for (let i = 0; i < 140; i++) {
+    ctx.fillStyle = FLOWERS[r.int(0, 3)];
+    ctx.globalAlpha = 0.75;
+    ctx.beginPath();
+    ctx.arc(r.range(0, W), r.range(0, H), r.range(1, 1.8), 0, TAU);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
 
   // Дорожки из камня
+  // Утоптанная земля по краям дорожек
+  for (const lane of LANES) {
+    ctx.strokeStyle = 'rgba(70,58,40,0.55)';
+    ctx.lineWidth = 50;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    for (let t = 0; t <= 1.0001; t += 0.02) {
+      const [x, y] = lane(t);
+      t === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
   for (const lane of LANES) {
     ctx.strokeStyle = '#4a4538';
     ctx.lineWidth = 34;
@@ -101,12 +147,38 @@ function paintMap(ctx: CanvasRenderingContext2D) {
     }
   }
 
-  // Река с бродом
+  // Река с бродом: берег, глубина посередине, кувшинки
+  ctx.fillStyle = '#3d3a2c';
+  ctx.beginPath();
+  for (let y = 0; y <= H; y += 10) ctx.lineTo(riverX(y) - 40, y);
+  for (let y = H; y >= 0; y -= 10) ctx.lineTo(riverX(y) + 40, y);
+  ctx.fill();
   ctx.fillStyle = '#1f4f63';
   ctx.beginPath();
   for (let y = 0; y <= H; y += 10) ctx.lineTo(riverX(y) - 34, y);
   for (let y = H; y >= 0; y -= 10) ctx.lineTo(riverX(y) + 34, y);
   ctx.fill();
+  ctx.fillStyle = 'rgba(10,35,50,0.55)';
+  ctx.beginPath();
+  for (let y = 0; y <= H; y += 10) ctx.lineTo(riverX(y) - 14, y);
+  for (let y = H; y >= 0; y -= 10) ctx.lineTo(riverX(y) + 14, y);
+  ctx.fill();
+  for (let i = 0; i < 16; i++) {
+    const y = r.range(10, H - 10);
+    const x = riverX(y) + r.range(-26, 26);
+    if (LANES.some((lane) => [0.46, 0.5, 0.54].some((t) => Math.hypot(lane(t)[0] - x, lane(t)[1] - y) < 40))) continue;
+    ctx.fillStyle = '#3f7a45';
+    ctx.beginPath();
+    ctx.arc(x, y, r.range(3, 5), 0.4, TAU - 0.2);
+    ctx.lineTo(x, y);
+    ctx.fill();
+    if (r.next() < 0.3) {
+      ctx.fillStyle = '#f3b6cf';
+      ctx.beginPath();
+      ctx.arc(x + 1, y - 1, 1.6, 0, TAU);
+      ctx.fill();
+    }
+  }
   ctx.strokeStyle = 'rgba(160,220,230,0.25)';
   ctx.lineWidth = 2;
   for (const off of [-34, 34]) {
@@ -151,6 +223,13 @@ function paintMap(ctx: CanvasRenderingContext2D) {
 
   // Площадки баз
   [55, 945].forEach((cx, side) => {
+    const halo = ctx.createRadialGradient(cx, 300, 100, cx, 300, 200);
+    halo.addColorStop(0, SIDE_COLORS[side] + '40');
+    halo.addColorStop(1, SIDE_COLORS[side] + '00');
+    ctx.fillStyle = halo;
+    ctx.beginPath();
+    ctx.arc(cx, 300, 200, 0, TAU);
+    ctx.fill();
     ctx.fillStyle = '#3b3a35';
     ctx.beginPath();
     ctx.arc(cx, 300, 135, 0, TAU);
@@ -201,6 +280,11 @@ function paintDecor(ctx: CanvasRenderingContext2D, v: View) {
         ctx.arc(x + dx * s, y + dy * s, rr * s, 0, TAU);
         ctx.fill();
       }
+      // блик сверху-слева
+      ctx.fillStyle = 'rgba(190,230,140,0.18)';
+      ctx.beginPath();
+      ctx.arc(x - 5 * s, y - 38 * s, 6 * s, 0, TAU);
+      ctx.fill();
     } else if (d.kind === 'bush') {
       for (const [dx, dy, rr, c] of [
         [-6, -6, 8, '#2a5a31'],
@@ -247,6 +331,12 @@ function getMap(v: View) {
   paintMap(ctx);
   ctx.restore();
   paintDecor(ctx, v);
+  // Свет сцены: тёплое пятно в центре и затемнение по краям
+  const vg = ctx.createRadialGradient(v.cw / 2, v.ch / 2, Math.min(v.cw, v.ch) * 0.25, v.cw / 2, v.ch / 2, Math.max(v.cw, v.ch) * 0.75);
+  vg.addColorStop(0, 'rgba(255,200,120,0.06)');
+  vg.addColorStop(1, 'rgba(8,6,12,0.55)');
+  ctx.fillStyle = vg;
+  ctx.fillRect(0, 0, v.cw, v.ch);
   mapCache = { key, cv };
   return cv;
 }
@@ -494,6 +584,46 @@ function drawUnit(ctx: CanvasRenderingContext2D, u: Unit, p: [number, number], t
   ctx.beginPath();
   ctx.ellipse(0, 0, 15 * heroScale, 5.5 * heroScale, 0, 0, TAU);
   ctx.stroke();
+  // пыль из-под ног при ходьбе
+  if (u.moving) {
+    ctx.fillStyle = 'rgba(200,185,150,0.35)';
+    for (let i = 0; i < 2; i++) {
+      const ph = (t * 3 + i * 0.5 + u.homeY) % 1;
+      ctx.globalAlpha = (1 - ph) * (u.hidden > 0 ? 0.35 : 1);
+      ctx.beginPath();
+      ctx.arc(-u.face * (6 + ph * 10) * heroScale, -ph * 4 * heroScale, (2 + ph * 3) * heroScale, 0, TAU);
+      ctx.fill();
+    }
+    ctx.globalAlpha = u.hidden > 0 ? 0.35 : 1;
+  }
+  // след удара
+  if (u.swing > 0) {
+    const k = u.swing / 0.25;
+    ctx.strokeStyle = `rgba(255,245,220,${0.6 * k})`;
+    ctx.lineWidth = 3 * heroScale;
+    ctx.beginPath();
+    ctx.ellipse(u.face * 10 * heroScale, -22 * heroScale, 18 * heroScale, 12 * heroScale, 0, u.face > 0 ? -1.4 : Math.PI - 0.6, u.face > 0 ? 0.6 : Math.PI + 1.4);
+    ctx.stroke();
+  }
+  // применение умения: вспышка под ногами
+  if (u.cast > 0) {
+    const k = u.cast / 0.35;
+    const g = ctx.createRadialGradient(0, 0, 0, 0, 0, 34 * heroScale);
+    g.addColorStop(0, `rgba(255,230,160,${0.55 * k})`);
+    g.addColorStop(1, 'rgba(255,230,160,0)');
+    ctx.fillStyle = g;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 34 * heroScale, 14 * heroScale, 0, 0, TAU);
+    ctx.fill();
+  }
+  // мало здоровья: красная пульсация
+  if (u.hp < u.maxHp * 0.25) {
+    ctx.strokeStyle = `rgba(255,70,70,${0.35 + Math.sin(t * 9) * 0.25})`;
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.ellipse(0, 0, 20 * heroScale, 7.5 * heroScale, 0, 0, TAU);
+    ctx.stroke();
+  }
   ctx.scale(heroScale, heroScale);
   drawHero(ctx, u.champ, { t: t + u.homeY, moving: u.moving, swing: u.swing, cast: u.cast, flash: u.flash, face: u.face });
   ctx.restore();
@@ -566,6 +696,18 @@ export function drawMatch(ctx: CanvasRenderingContext2D, m: Match, cw: number, c
     ctx.fillStyle = '#ffc163';
     ctx.beginPath();
     ctx.ellipse(x, y - 22 * v.k, 4 * v.k, 7 * v.k * f, 0, 0, TAU);
+    ctx.fill();
+  }
+
+  // Светлячки и пыльца над картой: живой фон без лишней нагрузки
+  for (let i = 0; i < 18; i++) {
+    const wx = (i * 137 + Math.sin(t * 0.3 + i) * 40 + 1000) % 1000;
+    const wy = (i * 89 + Math.cos(t * 0.25 + i * 2) * 30 + 600) % 600;
+    const [x, y] = P(v, wx, wy);
+    const a = 0.25 + 0.25 * Math.sin(t * 2 + i * 1.7);
+    ctx.fillStyle = `rgba(255,230,150,${a})`;
+    ctx.beginPath();
+    ctx.arc(x, y, 1.6 * Math.max(1, v.k), 0, TAU);
     ctx.fill();
   }
 
@@ -708,14 +850,75 @@ export function drawMatch(ctx: CanvasRenderingContext2D, m: Match, cw: number, c
       ctx.fillText(f.text!, a[0], ty);
       ctx.globalAlpha = 1;
     } else if (f.kind === 'death') {
-      ctx.globalAlpha = f.t / f.life;
-      ctx.fillStyle = '#e8f4ff';
-      for (let i = 0; i < 6; i++) {
-        const ang = (i / 6) * TAU;
+      // кольцо по земле, искры и душа, улетающая вверх
+      const k = f.t / f.life;
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = 3 * heroScale * k;
+      ctx.beginPath();
+      ctx.ellipse(a[0], a[1], 10 + p * 46 * heroScale, (10 + p * 46 * heroScale) * 0.45, 0, 0, TAU);
+      ctx.stroke();
+      ctx.fillStyle = f.color;
+      for (let i = 0; i < 10; i++) {
+        const ang = (i / 10) * TAU + i;
+        const r = p * (22 + (i % 3) * 10) * heroScale;
         ctx.beginPath();
-        ctx.arc(a[0] + Math.cos(ang) * p * 26, a[1] - 20 * heroScale - p * 30 + Math.sin(ang) * p * 10, 2.5, 0, TAU);
+        ctx.arc(a[0] + Math.cos(ang) * r, a[1] - 22 * heroScale + Math.sin(ang) * r * 0.6 + p * p * 18, 2.6 * k + 0.6, 0, TAU);
         ctx.fill();
       }
+      ctx.globalAlpha = k * 0.7;
+      const g = ctx.createRadialGradient(a[0], a[1] - 30 * heroScale - p * 50, 0, a[0], a[1] - 30 * heroScale - p * 50, 14 * heroScale);
+      g.addColorStop(0, '#ffffff');
+      g.addColorStop(1, 'rgba(255,255,255,0)');
+      ctx.fillStyle = g;
+      ctx.beginPath();
+      ctx.arc(a[0], a[1] - 30 * heroScale - p * 50, 14 * heroScale, 0, TAU);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    } else if (f.kind === 'spark') {
+      // искры от удара
+      const k = f.t / f.life;
+      ctx.globalAlpha = k;
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = 1.6;
+      const cy = a[1] - 24 * heroScale;
+      const seed = (f.x * 7 + f.y * 13) % 6;
+      for (let i = 0; i < 4; i++) {
+        const ang = seed + i * 1.6;
+        const r0 = 3 + p * 6;
+        const r1 = 6 + p * 14;
+        ctx.beginPath();
+        ctx.moveTo(a[0] + Math.cos(ang) * r0 * heroScale, cy + Math.sin(ang) * r0 * heroScale);
+        ctx.lineTo(a[0] + Math.cos(ang) * r1 * heroScale, cy + Math.sin(ang) * r1 * heroScale);
+        ctx.stroke();
+      }
+      ctx.globalAlpha = 1;
+    } else if (f.kind === 'beam') {
+      // столб света: возрождение или взятый объект
+      const k = f.t / f.life;
+      const w = 18 * heroScale * (0.6 + k * 0.4);
+      const g = ctx.createLinearGradient(0, a[1] - 140 * heroScale, 0, a[1]);
+      g.addColorStop(0, 'rgba(255,255,255,0)');
+      g.addColorStop(1, f.color);
+      ctx.globalAlpha = k * 0.75;
+      ctx.fillStyle = g;
+      ctx.fillRect(a[0] - w / 2, a[1] - 140 * heroScale, w, 140 * heroScale);
+      ctx.strokeStyle = f.color;
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(a[0], a[1], w * (1 + p * 2), w * (1 + p * 2) * 0.4, 0, 0, TAU);
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+    } else if (f.kind === 'gold') {
+      ctx.globalAlpha = Math.min(1, (f.t / f.life) * 2);
+      ctx.font = `700 ${Math.round(12 * Math.max(1, dpr * 0.7))}px "Golos Text", system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.lineWidth = 3;
+      ctx.strokeStyle = 'rgba(10,8,14,0.8)';
+      const ty = a[1] - 56 * heroScale - p * 22;
+      ctx.strokeText(f.text!, a[0], ty);
+      ctx.fillStyle = f.color;
+      ctx.fillText(f.text!, a[0], ty);
       ctx.globalAlpha = 1;
     }
   }

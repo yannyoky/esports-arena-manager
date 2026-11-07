@@ -75,6 +75,8 @@ export interface Unit extends Ent {
   heroDmg: number; // урон по героям
   towerDmg: number; // урон по строениям
   hitBy: Record<number, number>; // индекс врага → когда он последний раз бил
+  multi: number; // убийств подряд за короткое время
+  lastKill: number;
   streak: number; // убийств подряд без смерти
 }
 
@@ -119,9 +121,20 @@ export interface Core extends Ent {
   side: 0 | 1;
   atkT: number;
   hit: number;
+  low?: boolean;
 }
 
-export type FxKind = 'shot' | 'arrow' | 'bolt' | 'aoe' | 'heal' | 'ward' | 'dash' | 'hook' | 'text' | 'death' | 'slash' | 'tower' | 'rubble' | 'level';
+export type FxKind = 'shot' | 'arrow' | 'bolt' | 'aoe' | 'heal' | 'ward' | 'dash' | 'hook' | 'text' | 'death' | 'slash' | 'tower' | 'rubble' | 'level' | 'spark' | 'beam' | 'gold';
+
+// События матча для комментаторов и баннеров
+export type MatchEvent =
+  | { kind: 'first'; t: number; killer: Unit | null; victim: Unit }
+  | { kind: 'kill'; t: number; killer: Unit | null; victim: Unit; multi: number; streak: number; shutdown: number }
+  | { kind: 'ace'; t: number; side: 0 | 1 }
+  | { kind: 'tower'; t: number; side: 0 | 1; lane: LaneId; tier: 0 | 1 }
+  | { kind: 'objective'; t: number; side: 0 | 1; type: NeutralType }
+  | { kind: 'core'; t: number; side: 0 | 1 } // ядро стороны side ниже половины
+  | { kind: 'late'; t: number };
 
 export interface Fx {
   kind: FxKind;
@@ -161,6 +174,8 @@ export interface MatchState {
   siege: [number, number]; // время усиления колосса: урон по строениям задаёт патч
   objectives: [number, number]; // взятые духи и колоссы
   goldLine: number[]; // разница золота синих и красных каждые 10 секунд
+  events: MatchEvent[];
+  lateSaid?: boolean;
   cores: [Core, Core];
   kills: [number, number];
   towersDown: [number, number]; // сколько башен разрушила сторона
@@ -216,7 +231,7 @@ export class Match {
           kind: 'hero', side, player: p, champ: c, slot: setup.slots?.[side]?.[i] ?? p.pos, x: hx, y: hy, hp: maxHp, maxHp, shield: 0, flash: 0,
           dmg: chemK * mod.dmg * c.dmg * (0.75 + p.atk / 200) * (0.85 + mastery * 0.25) * (0.85 + formK * 0.15) * onPos,
           armor: Math.min(0.4, p.def / 300),
-          atkT: this.rng.range(0, 0.5), abT: c.abilityCd * mod.cd * this.rng.range(0.3, 0.8), cdK: mod.cd, streak: 0, assists: 0, gold: 0, heroDmg: 0, towerDmg: 0, hitBy: {},
+          atkT: this.rng.range(0, 0.5), abT: c.abilityCd * mod.cd * this.rng.range(0.3, 0.8), cdK: mod.cd, streak: 0, assists: 0, gold: 0, heroDmg: 0, towerDmg: 0, hitBy: {}, multi: 0, lastKill: -99,
           stun: 0, hidden: 0, dead: 0, kills: 0, deaths: 0, dealt: 0, healed: 0, level: 1, xp: 0,
           homeX: hx, homeY: hy, retreating: false, calm: 0, thinkT: this.rng.range(0, 0.3), intent: { kind: 'home' }, aggro: 0,
           face: side === 0 ? 1 : -1, moving: false, swing: 0, cast: 0,
@@ -245,6 +260,7 @@ export class Match {
       siege: [0, 0],
       objectives: [0, 0],
       goldLine: [0],
+      events: [],
       kills: [0, 0], towersDown: [0, 0], fx: [], feed: [], over: false, winner: -1, shake: 0, nextWave: 2,
     };
   }
@@ -322,6 +338,7 @@ export class Match {
     victim.hp = 0;
     victim.dead = (7 + victim.level * 1.8 + this.s.time / 30) * this.R.respawn;
     const bounty = this.R.bounty * Math.min(5, victim.streak); // награда за прерванную серию
+    const shutdown = victim.streak;
     victim.streak = 0;
     victim.deaths++;
     victim.shield = 0;
@@ -333,8 +350,15 @@ export class Match {
       killer.kills++;
       killer.streak++;
       killer.gold += 100;
+      killer.multi = this.s.time - killer.lastKill < 6 ? killer.multi + 1 : 1;
+      killer.lastKill = this.s.time;
       this.gainXp(killer, (60 + victim.level * 12) * this.R.killXp + bounty);
+      this.fx({ kind: 'gold', x: killer.x, y: killer.y, color: '#ffd166', t: 1, text: '+' + Math.round(100 + bounty) });
     }
+    const ev = this.s.events;
+    if (this.s.kills[0] + this.s.kills[1] === 1) ev.push({ kind: 'first', t: this.s.time, killer, victim });
+    else ev.push({ kind: 'kill', t: this.s.time, killer, victim, multi: killer?.multi ?? 0, streak: killer?.streak ?? 0, shutdown });
+    if (this.s.units.every((u) => u.side !== victim.side || u.dead > 0 || u === victim)) ev.push({ kind: 'ace', t: this.s.time, side: victim.side });
     this.shareXp(foe, victim.x, victim.y, (40 + victim.level * 8) * this.R.killXp + bounty, 320);
     // помощь: все враги, кто бил жертву за последние 8 секунд
     for (const [i, t] of Object.entries(victim.hitBy)) {
@@ -347,7 +371,7 @@ export class Match {
     victim.hitBy = {};
     this.s.feed.unshift({ kind: 'kill', t: this.s.time, killer, victim });
     if (this.s.feed.length > 6) this.s.feed.pop();
-    this.fx({ kind: 'death', x: victim.x, y: victim.y, color: '#fff', t: 0.9 });
+    this.fx({ kind: 'death', x: victim.x, y: victim.y, color: victim.side === 0 ? '#7fb2ff' : '#ff8a96', t: 1.1 });
   }
 
   // Урон по любой сущности. src — герой (для статистики и опыта) или null
@@ -381,6 +405,7 @@ export class Match {
       src.dealt += dmg;
       if (dst.kind === 'hero') {
         src.heroDmg += dmg;
+        this.fx({ kind: 'spark', x: dst.x, y: dst.y, color: crit || amount > src.dmg * 1.5 ? '#ffd166' : '#fff3d6', t: 0.25 });
         (dst as Unit).hitBy[this.s.units.indexOf(src)] = this.s.time;
       } else if (dst.kind === 'tower' || dst.kind === 'core') src.towerDmg += dmg;
     }
@@ -411,6 +436,9 @@ export class Match {
           this.s.feed.unshift({ kind: 'objective', t: this.s.time, side, type: n.type });
           if (this.s.feed.length > 6) this.s.feed.pop();
           this.fx({ kind: 'level', x: n.x, y: n.y, color: '#ffd166', t: 1.2, text: n.type === 'spirit' ? 'Дух реки' : 'Колосс' });
+          this.fx({ kind: 'beam', x: n.x, y: n.y, color: n.type === 'spirit' ? '#7fe6d4' : '#ffc163', t: 1.4 });
+          this.s.shake = Math.max(this.s.shake, 0.2);
+          this.s.events.push({ kind: 'objective', t: this.s.time, side, type: n.type });
         }
       }
     }
@@ -421,7 +449,8 @@ export class Match {
       this.shareXp(foe, t.x, t.y, this.R.towerXp, 400);
       this.s.feed.unshift({ kind: 'tower', t: this.s.time, side: t.side, lane: t.lane });
       if (this.s.feed.length > 6) this.s.feed.pop();
-      this.fx({ kind: 'rubble', x: t.x, y: t.y, color: '#d8cfc0', t: 1.2 });
+      this.fx({ kind: 'rubble', x: t.x, y: t.y, color: '#d8cfc0', t: 1.4 });
+      this.s.events.push({ kind: 'tower', t: this.s.time, side: t.side, lane: t.lane, tier: t.tier });
       this.s.shake = Math.max(this.s.shake, 0.3);
     }
   }
@@ -949,6 +978,7 @@ export class Match {
           u.y = u.homeY;
           u.retreating = false;
           u.intent = { kind: 'home' };
+          this.fx({ kind: 'beam', x: u.x, y: u.y, color: u.side === 0 ? '#7fb2ff' : '#ff8a96', t: 0.8 });
         }
         continue;
       }
@@ -1004,6 +1034,14 @@ export class Match {
     for (const c of s.cores) this.stepTower(c, dt);
     for (const n of s.neutrals) this.stepNeutral(n, dt);
     s.siege = [Math.max(0, s.siege[0] - dt), Math.max(0, s.siege[1] - dt)];
+    for (const c of s.cores) if (!c.low && c.hp < c.maxHp * 0.5) {
+      c.low = true;
+      s.events.push({ kind: 'core', t: s.time, side: c.side });
+    }
+    if (!s.lateSaid && s.time > 210) {
+      s.lateSaid = true;
+      s.events.push({ kind: 'late', t: s.time });
+    }
     if (s.time >= s.goldLine.length * 10) {
       const g = (sd: 0 | 1) => s.units.reduce((a, u) => a + (u.side === sd ? u.gold : 0), 0);
       s.goldLine.push(Math.round(g(0) - g(1)));
