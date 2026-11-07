@@ -514,6 +514,20 @@ function saveControls() {
   document.getElementById('exp')!.onclick = async () => {
     const text = exportSave(season);
     const name = `arena-manager-s${season.seasonNo}-w${season.week}.json`;
+    // В просмотрщике Claude файл отдаётся через его окно сохранения
+    const cl = (window as unknown as { claude?: { use?: (n: string) => Promise<unknown> } }).claude;
+    if (cl?.use) {
+      const dl = (await cl.use('downloads')) as { save: (r: { filename: string; data: string }) => Promise<unknown> } | null;
+      if (dl) {
+        try {
+          await dl.save({ filename: name, data: text });
+          toast('Файл сохранения готов');
+        } catch (e) {
+          if ((e as { code?: string }).code !== 'declined') toast('Не получилось сохранить файл здесь');
+        }
+        return;
+      }
+    }
     const file = new File([text], name, { type: 'application/json' });
     try {
       if (navigator.canShare?.({ files: [file] })) {
