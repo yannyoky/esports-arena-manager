@@ -713,7 +713,77 @@ function prospectSheet(p: Player) {
 
 // ---------- Таблица и сетка ----------
 
+let tableTab: 'table' | 'cal' = 'table';
+
+// Календарь сезона: все недели, соперники, результаты, патчи и плей-офф
+function calendarHtml() {
+  const me = humanTeam(season);
+  const total = totalWeeks(season);
+  const STAGE_SHORT: Record<Stage, string> = { league: 'Лига', semi: 'Полуфинал плей-офф', final: 'Финал лиги', 'intl-semi': 'Кубок мира · полуфинал', 'intl-final': 'Кубок мира · финал' };
+  const stageOfWeek = (w: number): Stage => (w <= LEAGUE_WEEKS ? 'league' : w === LEAGUE_WEEKS + 1 ? 'semi' : w === LEAGUE_WEEKS + 2 ? 'final' : w === LEAGUE_WEEKS + 3 ? 'intl-semi' : 'intl-final');
+  const played = season.fixtures.filter((f) => f.result && (f.home === me.id || f.away === me.id));
+  const wins = played.filter((f) => f.result!.winner === me.id).length;
+  const items: string[] = [];
+  for (let w = 1; w <= total; w++) {
+    const st = stageOfWeek(w);
+    const fs = season.fixtures.filter((f) => f.week === w);
+    const mine = fs.find((f) => f.home === me.id || f.away === me.id);
+    const now = !season.finished && w === season.week;
+    const past = season.finished || w < season.week;
+    const patch = (w - 1) % PATCH_EVERY === 0;
+    let main: string;
+    let res = '';
+    let state = '';
+    if (mine) {
+      const opp = teamById(season, mine.home === me.id ? mine.away : mine.home);
+      main = `${crest(opp.color, opp.tag, 26, opp.emblem)}<div><b>${esc(opp.name)}</b><small>${STAGE_SHORT[st]} · ${mine.home === me.id ? 'дома' : 'в гостях'}</small></div>`;
+      if (mine.result) {
+        const won = mine.result.winner === me.id;
+        const k = mine.home === me.id ? mine.result.kills : ([mine.result.kills[1], mine.result.kills[0]] as const);
+        res = `<span class="cres ${won ? 'w' : 'l'}"><b>${won ? 'Победа' : 'Пораж.'}</b>${k[0]}:${k[1]}</span>`;
+        state = won ? 'won' : 'lost';
+      } else if (now) res = `<span class="cres next">Сейчас</span>`;
+    } else {
+      const known = fs.length > 0;
+      const why = st === 'league' ? 'Нет матча' : known ? 'Вы не участвуете' : past ? 'Без вашего участия' : st === 'semi' || st === 'final' ? 'Если пройдёте дальше' : 'Только для чемпиона лиги';
+      main = `<span class="cnone">${ICON.rest(18)}</span><div><b>${why}</b><small>${STAGE_SHORT[st]}</small></div>`;
+      state = 'off';
+    }
+    const others = fs
+      .filter((f) => f !== mine)
+      .map((f) => {
+        const a = teamById(season, f.home);
+        const b = teamById(season, f.away);
+        const r = f.result;
+        return `<li><span class="${r?.winner === a.id ? 'w' : ''}">${esc(a.tag)}</span><em>${r ? `${r.kills[0]}:${r.kills[1]}` : '–'}</em><span class="${r?.winner === b.id ? 'w' : ''}">${esc(b.tag)}</span></li>`;
+      })
+      .join('');
+    const head = w === 1 || stageOfWeek(w - 1) !== st && (st === 'semi' || st === 'intl-semi') ? `<li class="csec">${st === 'league' ? 'Регулярный сезон' : st === 'semi' ? 'Плей-офф' : 'Кубок мира'}</li>` : '';
+    items.push(`${head}<li class="cw ${state} ${now ? 'now' : ''} ${past && !now ? 'past' : ''}">
+      <div class="cwk"><small>нед.</small><b>${w}</b></div>
+      <div class="cmain">${main}${patch ? `<span class="cpatch">${ICON.meta(12)}Патч</span>` : ''}</div>${res}
+      ${others ? `<details class="cothers"><summary>Другие матчи недели</summary><ul>${others}</ul></details>` : ''}</li>`);
+  }
+  return `<section class="block"><h3>Календарь · сезон ${season.seasonNo}</h3>
+    <p class="dim small">Сыграно ${played.length}, побед ${wins}. Новый патч выходит каждые ${PATCH_EVERY} недели.</p>
+    <ol class="cal">${items.join('')}</ol></section>`;
+}
+
 function table() {
+  const seg = `<div class="seg rtabs2">${(
+    [
+      ['table', 'Таблица'],
+      ['cal', 'Календарь'],
+    ] as const
+  )
+    .map(([k, l]) => `<button class="chip ${tableTab === k ? 'on' : ''}" data-tt="${k}">${l}</button>`)
+    .join('')}</div>`;
+  if (tableTab === 'cal') {
+    shell('table', seg + calendarHtml());
+    bindTableTabs();
+    app.querySelector('.cw.now')?.scrollIntoView({ block: 'center' });
+    return;
+  }
   const rows = standings(season)
     .map(
       (s, i) => `<tr class="${s.team.human ? 'me' : ''}"><td>${i + 1}</td><td class="tm">${crest(s.team.color, s.team.tag, 22, s.team.emblem)}${esc(s.team.name)}</td>
@@ -733,10 +803,21 @@ function table() {
   };
   const po = stage('semi', 'Полуфиналы') + stage('final', 'Финал');
   const intl = stage('intl-semi', 'Полуфиналы') + stage('intl-final', 'Финал');
-  shell('table', `<section class="block"><h3>Лига · сезон ${season.seasonNo}</h3><table class="tbl"><thead><tr><th>#</th><th>Команда</th><th>П</th><th>Пр</th><th>±</th></tr></thead><tbody>${rows}</tbody></table>
+  shell('table', seg + `<section class="block"><h3>Лига · сезон ${season.seasonNo}</h3><table class="tbl"><thead><tr><th>#</th><th>Команда</th><th>П</th><th>Пр</th><th>±</th></tr></thead><tbody>${rows}</tbody></table>
     <p class="dim small">После ${LEAGUE_WEEKS} недель четыре лучших выходят в плей-офф. Чемпион едет на Кубок мира против зарубежных клубов.</p></section>
     ${po ? `<section class="block"><h3>Плей-офф</h3><div class="bracket">${po}</div></section>` : ''}
     ${intl ? `<section class="block"><h3>Кубок мира</h3><div class="bracket">${intl}</div></section>` : ''}`);
+  bindTableTabs();
+}
+
+function bindTableTabs() {
+  app.querySelectorAll<HTMLButtonElement>('[data-tt]').forEach(
+    (b) =>
+      (b.onclick = () => {
+        tableTab = b.dataset.tt as 'table' | 'cal';
+        table();
+      }),
+  );
 }
 
 // ---------- Мета и патчи ----------
@@ -1015,6 +1096,30 @@ let autoCam = (() => {
   }
 })();
 
+let showBoard = (() => {
+  try {
+    return localStorage.getItem('arena-board') !== 'off';
+  } catch {
+    return true;
+  }
+})();
+
+// Табло игроков под полем: две колонки, по строке на игрока
+function boardHtml(m: Match) {
+  const col = (side: 0 | 1) => {
+    const rows = m.s.units
+      .map((u, i) => [u, i] as const)
+      .filter(([u]) => u.side === side)
+      .map(
+        ([u, i]) => `<div class="brow" id="br${i}"><span class="bic">${img(u.champ, 'xs')}<i id="bl${i}">1</i><em id="bd${i}"></em></span><span class="bnk">${esc(u.player.nick)}</span><span class="bk" id="bk${i}">0/0/0</span><span class="bgd" id="bg${i}">0</span><i class="bbar" id="bb${i}" style="background:${SIDE_COLORS[side]}"></i></div>`,
+      )
+      .join('');
+    return `<div class="bcol s${side}">${rows}</div>`;
+  };
+  const head = (side: 0 | 1) => `<span class="bh s${side}"><b style="color:${SIDE_COLORS[side]}">${esc(m.setup.teams[side].tag)}</b>${ICON.coin(12)}<b id="bt${side}">0</b></span>`;
+  return `<div class="board" id="board" ${showBoard ? '' : 'hidden'}><div class="bhead">${head(0)}<span class="gdiff sn" id="bdiff">±0</span>${head(1)}</div>${col(0)}${col(1)}</div>`;
+}
+
 function playMatch(m: Match, mode: 'live' | 'replay') {
   const [a, b] = m.setup.teams;
   swap(`<div class="screen match">
@@ -1027,11 +1132,13 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     <div class="field"><canvas id="cv"></canvas><ul class="feed" id="feed"></ul>
       <div class="banner" id="banner" aria-hidden="true"></div>
       <div class="cast" id="cast" aria-live="polite"></div></div>
+    ${boardHtml(m)}
     <div class="ctrl">
       <button data-speed="1" class="on" aria-label="Скорость 1">${ICON.play(18)}<span>1×</span></button>
       <button data-speed="2" aria-label="Скорость 2">${ICON.fast(18)}<span>2×</span></button>
       <button data-speed="4" aria-label="Скорость 4">${ICON.fast(18)}<span>4×</span></button>
       <button id="cam" class="${autoCam ? 'on' : ''}" aria-label="Камера">${ICON.eye(18)}<span>Камера</span></button>
+      <button id="brd" class="${showBoard ? 'on' : ''}" aria-label="Табло игроков">${ICON.board(18)}<span>Табло</span></button>
       <button id="skip" aria-label="К итогам">${ICON.skip(18)}<span>${mode === 'replay' ? 'Выход' : 'Итог'}</span></button>
     </div></div>`);
   setAudioMode('match');
@@ -1097,7 +1204,46 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     if (html) el.innerHTML = v;
     else el.textContent = v;
   };
+  // Табло: золото и У/С/П каждого игрока, обновляем только изменившиеся ячейки
+  const cls: Record<string, string> = {};
+  const setCls = (id: string, v: string) => {
+    if (cls[id] === v) return;
+    cls[id] = v;
+    const el = document.getElementById(id);
+    if (el) el.className = v;
+  };
+  const board = () => {
+    if (!showBoard) return;
+    const us = m.s.units;
+    const tot = [0, 0];
+    let maxG = 1;
+    for (const u of us) {
+      tot[u.side] += u.gold;
+      maxG = Math.max(maxG, u.gold);
+    }
+    const lead = [0, 1].map((sd) => us.filter((u) => u.side === sd).reduce((a, u) => (u.gold > a.gold ? u : a)));
+    us.forEach((u, i) => {
+      put(`bk${i}`, `${u.kills}/${u.deaths}/${u.assists}`);
+      put(`bg${i}`, kfmt(u.gold));
+      put(`bl${i}`, String(u.level));
+      put(`bw${i}`, String(Math.round((u.gold / maxG) * 100)));
+      const w = shown[`bw${i}`];
+      const bar = document.getElementById(`bb${i}`);
+      if (bar && bar.dataset.w !== w) {
+        bar.dataset.w = w;
+        bar.style.width = w + '%';
+      }
+      setCls(`br${i}`, `brow${u.dead > 0 ? ' dead' : ''}${lead[u.side] === u && u.gold > 0 ? ' lead' : ''}`);
+      put(`bd${i}`, u.dead > 0 ? String(Math.ceil(u.dead)) : '');
+    });
+    put('bt0', kfmt(tot[0]));
+    put('bt1', kfmt(tot[1]));
+    const diff = tot[0] - tot[1];
+    put('bdiff', diff === 0 ? '±0' : `${diff > 0 ? '◀' : ''} +${kfmt(Math.abs(diff))} ${diff < 0 ? '▶' : ''}`.trim());
+    setCls('bdiff', `gdiff s${diff > 0 ? 0 : diff < 0 ? 1 : 'n'}`);
+  };
   const hud = () => {
+    board();
     put('k0', String(m.s.kills[0]));
     put('k1', String(m.s.kills[1]));
     const left = Math.max(0, MATCH_TIME - m.s.time);
@@ -1179,7 +1325,9 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     hud();
     if (mode === 'live') result(m);
     else {
-      const s = sheet(`<h2>Повтор</h2>${statsHtml(m)}<button class="cta wide" id="cont">Закрыть</button>`, club);
+      const s = sheet(`<h2>Повтор</h2>${matchTabs(m, '')}<div class="sheet-foot"><button class="cta wide" id="cont">Закрыть</button></div>`, club);
+      s.el.querySelector('.sheet')!.classList.add('full');
+      bindMatchTabs(s.el);
       s.el.querySelector<HTMLButtonElement>('#cont')!.onclick = s.close;
     }
   };
@@ -1192,6 +1340,19 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       }),
   );
   document.getElementById('skip')!.onclick = end;
+  document.getElementById('brd')!.onclick = (e) => {
+    showBoard = !showBoard;
+    (e.currentTarget as HTMLElement).classList.toggle('on', showBoard);
+    document.getElementById('board')!.hidden = !showBoard;
+    resize();
+    drawMatch(ctx, m, cv.width, cv.height, dpr, autoCam);
+    hud();
+    try {
+      localStorage.setItem('arena-board', showBoard ? 'on' : 'off');
+    } catch {
+      /* без сохранения */
+    }
+  };
   document.getElementById('cam')!.onclick = (e) => {
     autoCam = !autoCam;
     (e.currentTarget as HTMLElement).classList.toggle('on', autoCam);
@@ -1203,22 +1364,16 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
   };
 }
 
-// Подробная статистика: K/D/A, золото, урон, лечение и график золота
-function statsHtml(m: Match) {
+// Сводка матча: итог, лучший игрок и график золота
+const kfmt = (n: number) => (n >= 1000 ? (r1(n / 100) / 10).toFixed(1) + 'к' : String(r1(n)));
+type U = Match['s']['units'][0];
+const mvpScore = (u: U) => u.kills * 3 + u.assists * 1.5 - u.deaths + u.heroDmg / 1500 + u.towerDmg / 2500 + u.healed / 800;
+const mvpOf = (m: Match) => [...m.s.units].sort((x, y) => mvpScore(y) - mvpScore(x))[0];
+
+function summaryHtml(m: Match) {
   const s = m.s;
-  const score = (u: (typeof s.units)[0]) => u.kills * 3 + u.assists * 1.5 - u.deaths + u.heroDmg / 1500 + u.towerDmg / 2500 + u.healed / 800;
-  const mvp = [...s.units].sort((x, y) => score(y) - score(x))[0];
-  const k = (n: number) => (n >= 1000 ? (r1(n / 100) / 10).toFixed(1) + 'к' : String(r1(n)));
-  const rows = (side: 0 | 1) =>
-    s.units
-      .filter((u) => u.side === side)
-      .map(
-        (u) => `<tr class="${u === mvp ? 'mvp' : ''}"><td class="tm"><span class="dot" style="background:${SIDE_COLORS[u.side]}"></span>${img(u.champ, 'xs')}<span class="nk">${esc(u.player.nick)}</span></td>
-        <td>${u.kills}/${u.deaths}/${u.assists}</td><td>${k(u.gold)}</td><td>${k(u.heroDmg)}</td><td>${k(u.towerDmg)}</td><td>${u.healed ? k(u.healed) : '–'}</td></tr>`,
-      )
-      .join('');
+  const mvp = mvpOf(m);
   const tot = (side: 0 | 1) => s.units.filter((u) => u.side === side).reduce((a, u) => a + u.gold, 0);
-  // график разницы золота
   const line = s.goldLine;
   const max = Math.max(500, ...line.map(Math.abs));
   const W = 300;
@@ -1227,10 +1382,52 @@ function statsHtml(m: Match) {
   const [a, b] = m.setup.teams;
   return `<p class="dim">${s.cores[0].hp <= 0 || s.cores[1].hp <= 0 ? 'Ядро разрушено' : 'По истечении времени'} · убийства ${s.kills[0]} : ${s.kills[1]} · башни ${s.towersDown[0]} : ${s.towersDown[1]} · объекты ${s.objectives[0]} : ${s.objectives[1]}</p>
     <div class="mvp-card">${img(mvp.champ)}<div><small>Лучший игрок матча</small><b>${esc(mvp.player.nick)}</b><span>${mvp.champ.name} · ${mvp.kills}/${mvp.deaths}/${mvp.assists}</span></div></div>
-    <div class="gold"><div class="row"><small style="color:${SIDE_COLORS[0]}">${esc(a.tag)} ${k(tot(0))}</small><small class="dim">разница золота</small><small style="color:${SIDE_COLORS[1]}">${k(tot(1))} ${esc(b.tag)}</small></div>
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><line x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" class="zero"/><polyline points="${pts}" class="gl"/></svg></div>
-    <div class="tbl-wrap"><table class="tbl stats"><thead><tr><th>Игрок</th><th>У/С/П</th><th>Зол.</th><th>Герои</th><th>Строен.</th><th>Леч.</th></tr></thead>
-    <tbody>${rows(0)}<tr class="gap"><td colspan="6"></td></tr>${rows(1)}</tbody></table></div>`;
+    <div class="gold"><div class="row"><small style="color:${SIDE_COLORS[0]}">${esc(a.tag)} ${kfmt(tot(0))}</small><small class="dim">разница золота</small><small style="color:${SIDE_COLORS[1]}">${kfmt(tot(1))} ${esc(b.tag)}</small></div>
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true"><line x1="0" y1="${H / 2}" x2="${W}" y2="${H / 2}" class="zero"/><polyline points="${pts}" class="gl"/></svg></div>`;
+}
+
+// Полная статистика: отдельная таблица на каждую команду, широкая, с прокруткой вбок
+function statsHtml(m: Match) {
+  const s = m.s;
+  const mvp = mvpOf(m);
+  const maxOf = (f: (u: U) => number) => Math.max(1, ...s.units.map(f));
+  const top = { gold: maxOf((u) => u.gold), dmg: maxOf((u) => u.heroDmg), tw: maxOf((u) => u.towerDmg), heal: maxOf((u) => u.healed) };
+  const cell = (v: number, mx: number, side: number) =>
+    `<td class="num"><span>${v ? kfmt(v) : '–'}</span><i class="bar" style="width:${Math.round((v / mx) * 100)}%;background:${SIDE_COLORS[side]}"></i></td>`;
+  const team = (side: 0 | 1) => {
+    const t = m.setup.teams[side];
+    const us = s.units.filter((u) => u.side === side);
+    const gold = us.reduce((a, u) => a + u.gold, 0);
+    const won = s.winner === side;
+    const rows = us
+      .map(
+        (u) => `<tr class="${u === mvp ? 'mvp' : ''}"><td class="pl">${img(u.champ, 'xs')}<div><b>${esc(u.player.nick)}${u === mvp ? ' <i class="mvp-b">MVP</i>' : ''}</b><small>${u.champ.name} · ур. ${u.level}</small></div></td>
+        <td class="kda"><b>${u.kills}</b>/<b class="d">${u.deaths}</b>/<b>${u.assists}</b></td>${cell(u.gold, top.gold, side)}${cell(u.heroDmg, top.dmg, side)}${cell(u.towerDmg, top.tw, side)}${cell(u.healed, top.heal, side)}</tr>`,
+      )
+      .join('');
+    return `<div class="st-team"><div class="st-head" style="--c:${SIDE_COLORS[side]}">${crest(SIDE_COLORS[side], t.tag, 22, t.emblem)}<b>${esc(t.name)}</b><span>${won ? 'победа' : 'поражение'} · ${s.kills[side]} убийств · ${kfmt(gold)} золота</span></div>
+      <div class="tbl-wrap"><table class="tbl stats"><thead><tr><th>Игрок</th><th>У/С/П</th><th>Золото</th><th>Урон по героям</th><th>По строениям</th><th>Лечение</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
+  };
+  return `${team(0)}${team(1)}`;
+}
+
+// Итоги в две вкладки: «Разбор» и «Статистика»
+function matchTabs(m: Match, review: string) {
+  return `<div class="seg rtabs" role="tablist"><button class="chip on" data-rt="sum" role="tab">Разбор</button><button class="chip" data-rt="stats" role="tab">Статистика</button></div>
+    <div class="rpane" data-p="sum">${summaryHtml(m)}${review}</div>
+    <div class="rpane" data-p="stats" hidden>${statsHtml(m)}</div>`;
+}
+
+function bindMatchTabs(root: HTMLElement) {
+  const sh = root.querySelector<HTMLElement>('.sheet')!;
+  root.querySelectorAll<HTMLButtonElement>('[data-rt]').forEach(
+    (b) =>
+      (b.onclick = () => {
+        root.querySelectorAll('[data-rt]').forEach((x) => x.classList.toggle('on', x === b));
+        root.querySelectorAll<HTMLElement>('.rpane').forEach((p) => (p.hidden = p.dataset.p !== b.dataset.rt));
+        sh.scrollTop = 0;
+      }),
+  );
 }
 
 // Разбор тренера: ключевые моменты матча и советы на следующий драфт
@@ -1293,12 +1490,12 @@ function result(m: Match) {
   const opp = m.setup.teams.find((t) => t.id !== me.id)!;
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
-  overlay.innerHTML = `<div class="sheet">
+  overlay.innerHTML = `<div class="sheet full">
     <h2 class="${won ? 'win' : 'lose'}">${won ? 'Победа' : 'Поражение'}</h2>
-    ${reviewHtml(m, m.setup.teams[0].id === me.id ? 0 : 1)}
-    ${statsHtml(m)}
-    <button class="cta wide" id="cont">Дальше</button></div>`;
+    ${matchTabs(m, reviewHtml(m, m.setup.teams[0].id === me.id ? 0 : 1))}
+    <div class="sheet-foot"><button class="cta wide" id="cont">Дальше</button></div></div>`;
   app.appendChild(overlay);
+  bindMatchTabs(overlay);
   document.getElementById('cont')!.onclick = () => {
     const order = lastDraft?.order;
     const bans: [string[], string[]] = lastDraft ? lastDraft.bans : [[], []];

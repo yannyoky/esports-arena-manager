@@ -22,6 +22,8 @@ export const ICON = {
   tower: (s?: number) => svg('<path d="M7 21V9l-1-5h3v2h2V4h2v2h2V4h3l-1 5v12z"/><path d="M10 21v-4h4v4"/>', s),
   star: (s?: number) => svg('<path d="m12 3 2.6 5.6 6.1.7-4.5 4.2 1.2 6L12 16.6 6.6 19.5l1.2-6L3.3 9.3l6.1-.7z"/>', s),
   meta: (s?: number) => svg('<path d="M3 17l6-6 4 4 8-8"/><path d="M15 7h6v6"/>', s),
+  cal: (s?: number) => svg('<rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><path d="M4 10h16"/><path d="M8.5 3.5v4"/><path d="M15.5 3.5v4"/>', s),
+  board: (s?: number) => svg('<rect x="3.5" y="5" width="17" height="14" rx="2.5"/><path d="M12 5v14"/><path d="M6.5 9.5h3"/><path d="M6.5 13h3"/><path d="M14.5 9.5h3"/><path d="M14.5 13h3"/>', s),
   eye: (s?: number) => svg('<path d="M2 12s3.6-6 10-6 10 6 10 6-3.6 6-10 6S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>', s),
   skull: (s?: number) => svg('<path d="M12 3a7 7 0 0 0-7 7c0 2.4 1.2 4.1 3 5.2V19h8v-3.8c1.8-1.1 3-2.8 3-5.2a7 7 0 0 0-7-7z"/><circle cx="9.5" cy="11" r="1.4" fill="currentColor"/><circle cx="14.5" cy="11" r="1.4" fill="currentColor"/>', s),
 };
