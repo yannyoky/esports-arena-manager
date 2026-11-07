@@ -42,6 +42,7 @@ function swap(html: string, keep = false) {
     cleanup = null;
   }
   app.innerHTML = html;
+  document.body.classList.remove('in-match');
   if (!keep) app.firstElementChild?.classList.add('enter');
   setAudioMode('menu');
 }
@@ -74,12 +75,12 @@ function soundSheet() {
 
 // Подсказки новичку: по одной на экран, пока игрок их не закроет
 const TIPS: Record<string, string> = {
-  home: 'Это штаб клуба. Кнопка матча недели ведёт в драфт: команды по очереди банят и выбирают героев. Потом расстановка по линиям и сам матч. Тренировки идут сами по плану из вкладки «Состав».',
-  roster: 'Нажмите на игрока, чтобы увидеть характеристики, любимых героев и контракт. Уставшие и недовольные игроки играют хуже. План тренировок меняется в блоке ниже.',
-  market: 'Свободных агентов можно подписать сразу, игроков других клубов придётся выкупать. Зарплаты списываются каждую неделю, следите за балансом вверху.',
-  club: 'Персонал усиливает команду, спонсор и болельщики приносят деньги, академия растит таланты. Здесь же повторы матчей и сохранение игры в файл.',
-  table: 'Лучшие команды лиги после 10 недель выходят в плей-офф, а чемпион едет на Кубок мира.',
-  meta: 'Каждые 3 недели выходит патч: самые популярные и сильные герои слабеют, забытые усиливаются. Тиры подскажут, кого брать в драфте.',
+  home: 'Матч недели: драфт героев, расстановка и игра. Тренировки идут сами.',
+  roster: 'Нажмите на игрока: характеристики, герои, контракт.',
+  market: 'Свободные агенты подписываются сразу, игроков клубов надо выкупать.',
+  club: 'Деньги, персонал, академия и архив матчей.',
+  table: 'Топ-4 после 10 недель играют плей-офф, чемпион едет на Кубок мира.',
+  meta: 'Патч каждые 3 недели: популярные герои слабеют, забытые усиливаются.',
 };
 const tipsSeen = (() => {
   try {
@@ -90,7 +91,7 @@ const tipsSeen = (() => {
 })();
 function tipHtml(id: string) {
   if (!TIPS[id] || tipsSeen.has(id)) return '';
-  return `<aside class="tip" data-tip="${id}"><span class="tip-i">?</span><p>${TIPS[id]}</p><button class="tip-x" aria-label="Понятно">Понятно</button></aside>`;
+  return `<aside class="tip" data-tip="${id}"><span class="tip-i">?</span><p>${TIPS[id]}</p><button class="tip-x" aria-label="Скрыть подсказку">×</button></aside>`;
 }
 function bindTips() {
   app.querySelectorAll<HTMLElement>('.tip').forEach((el) => {
@@ -101,7 +102,8 @@ function bindTips() {
       } catch {
         /* без сохранения */
       }
-      el.remove();
+      el.classList.add('out');
+      setTimeout(() => el.remove(), 220);
     };
   });
 }
@@ -149,6 +151,21 @@ const on = (sel: string, fn: (el: HTMLElement) => void) => app.querySelectorAll<
 
 // ---------- Всплывающие окна ----------
 
+// Переключатель разделов внутри экрана
+const segPrev: Record<string, number> = {};
+function segTabs(key: string, cur: string, items: [string, string][]) {
+  const i = Math.max(0, items.findIndex(([k]) => k === cur));
+  const from = segPrev[key] ?? i;
+  segPrev[key] = i;
+  return `<div class="segtabs" role="tablist" style="--n:${items.length};--i:${i};--from:${from}"><i class="seg-pill"></i>${items
+    .map(([k, l]) => `<button role="tab" class="${k === cur ? 'on' : ''}" aria-selected="${k === cur}" data-${key}="${k}">${l}</button>`)
+    .join('')}</div>`;
+}
+function bindSeg(key: string, fn: (v: string) => void) {
+  app.querySelectorAll<HTMLButtonElement>(`[data-${key}]`).forEach((b) => (b.onclick = () => b.classList.contains('on') || fn(b.getAttribute(`data-${key}`)!)));
+}
+const CHEV = '<svg class="ico chev" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 6 6 6-6 6"/></svg>';
+
 function sheet(html: string, onClose?: () => void) {
   app.querySelector('.overlay')?.remove();
   const o = document.createElement('div');
@@ -181,10 +198,13 @@ const findPlayer = (id: string) => {
 
 const mood = (p: Player) => (p.morale >= 75 ? 'довольный' : p.morale >= 45 ? 'спокойный' : 'недовольный');
 
+const POS_SHORT = ['ВЕРХ', 'ЦЕНТР', 'СТРЕЛ', 'ЛЕС', 'ПОДД'];
+const ovrTier = (v: number) => (v >= 70 ? 3 : v >= 60 ? 2 : v >= 50 ? 1 : 0);
+
 function playerRow(p: Player, right = '', cls = '') {
   return `<button class="prow ${cls}" data-p="${p.id}">
-    <span class="posl">${POS_NAMES[p.pos]}</span>
-    <div class="pmain"><b>${esc(p.nick)}</b><small>${p.age} лет · сила ${r1(ovr(p))}${p.trait ? ` · ${TRAIT_INFO[p.trait].name.toLowerCase()}` : ''}${p.fatigue > 60 ? ' · <i class="warn">устал</i>' : ''}${p.morale < 40 ? ' · <i class="warn">недоволен</i>' : ''}</small></div>
+    <span class="ovr t${ovrTier(ovr(p))}"><b>${r1(ovr(p))}</b><small>${POS_SHORT[p.pos]}</small></span>
+    <div class="pmain"><b>${esc(p.nick)}</b><small>${p.age} лет${p.trait ? ` · ${TRAIT_INFO[p.trait].name.toLowerCase()}` : ''}${p.fatigue > 60 ? ' · <i class="warn">устал</i>' : ''}${p.morale < 40 ? ' · <i class="warn">недоволен</i>' : ''}</small></div>
     <div class="favs">${p.favs.map((id) => img(champById(id), 'xs')).join('')}</div>
     ${right}</button>`;
 }
@@ -247,13 +267,14 @@ const TRAIN_ICON: Record<Training, string> = { mix: ICON.star(22), atk: ICON.swo
 // План тренировок: выбирается один раз и работает каждую неделю
 function trainingBlock() {
   return `<section class="block" id="plan">
-      <h3>Тренировки</h3>
-      <p class="dim small">Команда тренируется каждую неделю сама. Выберите, на что делать упор.</p>
-      <div class="train">${(Object.keys(TRAINING_NAMES) as Training[])
-        .map((t) => `<button class="opt ${season.focus === t ? 'on' : ''}" data-train="${t}" aria-pressed="${season.focus === t}">${TRAIN_ICON[t]}<span>${TRAINING_NAMES[t]}</span><small>${TRAINING_TEXT[t]}</small></button>`)
+      <div class="row"><h3>Тренировки</h3><span class="dim small">каждую неделю сами</span></div>
+      <div class="trains">${(Object.keys(TRAINING_NAMES) as Training[])
+        .map((t) => `<button class="tchip ${season.focus === t ? 'on' : ''}" data-train="${t}" aria-pressed="${season.focus === t}">${TRAIN_ICON[t]}<span>${TRAINING_SHORT[t]}</span></button>`)
         .join('')}</div>
+      <p class="dim small tdesc">${TRAINING_TEXT[season.focus]}</p>
     </section>`;
 }
+const TRAINING_SHORT: Record<Training, string> = { mix: 'Баланс', atk: 'Атака', def: 'Защита', iq: 'Тактика', rest: 'Отдых' };
 
 function offseason() {
   const me = humanTeam(season);
@@ -299,12 +320,31 @@ function home() {
       <p>Ваша команда на этой неделе не играет. Можно заняться трансферами и посмотреть матчи других.</p>
       <button class="cta" id="skipweek">Завершить неделю</button></section>`;
   }
-  const focus = `<button class="block patch-card" id="focus"><div class="pc-top">${TRAIN_ICON[season.focus]}<b>Тренировки: ${TRAINING_NAMES[season.focus]}</b><span class="dim small">изменить</span></div></button>`;
-  shell('home', `${eventsHtml()}${top}${sponsorNote}${goalsCard()}${patchCard()}${focus}${logCard()}`);
+  // Короткая сводка: место, форма, доверие владельца
+  const place = standings(season).findIndex((x) => x.team.human) + 1;
+  const form = season.fixtures
+    .filter((f) => f.result && (f.home === me.id || f.away === me.id))
+    .slice(-5)
+    .map((f) => `<i class="${f.result!.winner === me.id ? 'w' : 'l'}"></i>`)
+    .join('');
+  const strip = `<div class="strip">
+    <div><small>Место</small><b>${place}<em>/${standings(season).length}</em></b></div>
+    <div><small>Форма</small><span class="form">${form || '<em>—</em>'}</span></div>
+    <div><small>Доверие</small><b>${season.trust}<em>%</em></b></div></div>`;
+  const goalsDone = season.goals.filter((g) => goalNow(season, g).ok).length;
+  const p = season.meta.patch;
+  const n = nextPatchIn();
+  const rows = [
+    !season.sponsor ? `<button class="qrow hot" id="sp">${ICON.coin(18)}<b>Выберите спонсора</b><span>нет дохода</span>${CHEV}</button>` : '',
+    season.goals.length ? `<button class="qrow" id="goals">${ICON.table(18)}<b>Цели владельца</b><span>${goalsDone} из ${season.goals.length}</span>${CHEV}</button>` : '',
+    `<button class="qrow ${season.unseenPatch ? 'hot' : ''}" id="patch">${ICON.meta(18)}<b>${season.unseenPatch ? 'Новый патч ' : 'Патч '}${p.ver}</b><span>${n ? `след. через ${n} нед.` : 'последний'}</span>${CHEV}</button>`,
+    `<button class="qrow" id="focus">${TRAIN_ICON[season.focus].replace('width="22" height="22"', 'width="18" height="18"')}<b>Тренировки</b><span>${TRAINING_SHORT[season.focus]}</span>${CHEV}</button>`,
+  ].join('');
+  shell('home', `${eventsHtml()}${top}${strip}<div class="qlist">${rows}</div>${logCard()}`);
   bindEvents();
   showNewAch();
   const gl = document.getElementById('goals');
-  if (gl) gl.onclick = () => achSheet();
+  if (gl) gl.onclick = () => goalsSheet();
   document.getElementById('focus')!.onclick = () => rosterScreen();
   const play = document.getElementById('play');
   if (play) play.onclick = () => draft();
@@ -348,15 +388,17 @@ function bindEvents() {
   );
 }
 
-function goalsCard() {
-  const g = season.goals;
-  if (!g.length) return '';
-  return `<button class="block goals" id="goals"><div class="pc-top">${ICON.table(18)}<b>Цели владельца</b><span class="dim small">достижения ${season.achievements.length}/${ACHIEVEMENTS.length}</span></div>
-    ${g.map((x) => {
+function goalsSheet() {
+  const s = sheet(`<h2>Цели владельца</h2><p class="dim">За каждую выполненную цель в конце сезона премия и рост доверия.</p>
+    ${season.goals.map((x) => {
       const st = goalNow(season, x);
       return `<div class="goal ${st.ok ? 'ok' : ''}"><i>${st.ok ? '✓' : '○'}</i><span>${goalText(x)}<small>${st.now} · премия ${x.reward.toLocaleString('ru')}</small></span></div>`;
     }).join('')}
-    <div class="trust"><span class="dim small">Доверие владельца</span><i style="--k:${season.trust / 100}"></i></div></button>`;
+    <div class="trust"><span class="dim small">Доверие ${season.trust}%</span><i style="--k:${season.trust / 100}"></i></div>
+    <button class="chip" id="ach2">${ICON.star(14)} Достижения ${season.achievements.length} из ${ACHIEVEMENTS.length}</button>
+    <button class="cta wide" id="ok">Понятно</button>`);
+  s.el.querySelector<HTMLButtonElement>('#ok')!.onclick = s.close;
+  s.el.querySelector<HTMLButtonElement>('#ach2')!.onclick = achSheet;
 }
 
 function achSheet() {
@@ -445,20 +487,9 @@ function nextPatchIn() {
   return w > totalWeeks(season) ? null : w - season.week;
 }
 
-function patchCard() {
-  const p = season.meta.patch;
-  const n = nextPatchIn();
-  const fresh = season.unseenPatch;
-  const heroes = p.notes.filter((x) => x.id).slice(0, 4).map((x) => img(champById(x.id!), 'xs ' + (x.kind === 'buff' ? 'up' : 'down'))).join('');
-  return `<button class="block patch-card ${fresh ? 'fresh' : ''}" id="patch">
-    <div class="pc-top">${ICON.meta(18)}<b>${fresh ? 'Новый патч ' + p.ver : 'Патч ' + p.ver}</b><span class="dim small">${n ? `следующий через ${n} нед.` : 'последний в сезоне'}</span></div>
-    <div class="pc-heroes">${heroes}<span class="dim small">${p.notes.length} изменений · читать</span></div>
-  </button>`;
-}
-
 function logCard() {
-  return `<section class="block"><h3>Новости</h3><ul class="log">${season.log
-    .slice(0, 6)
+  return `<section class="block news"><h3>Новости</h3><ul class="log">${season.log
+    .slice(0, 4)
     .map((l) => `<li>${esc(l)}</li>`)
     .join('')}</ul></section>`;
 }
@@ -474,17 +505,17 @@ function rosterScreen() {
   const chem = chemistry(me);
   const wage = roster(me).reduce((a, p) => a + p.salary, 0);
   shell('roster', `
-    ${trainingBlock()}
     <section class="block">
       <div class="row"><h3>Стартовая пятёрка</h3><span class="dim small">сыгранность ${Math.round(chem * 100)}%</span></div>
       <div class="chem"><i style="--v:${Math.round(chem * 100)}%"></i></div>
-      ${me.players.map((p) => playerRow(p, `<em class="dim small">${p.contract <= 1 ? 'последний сезон' : ''}</em>`)).join('')}
+      ${me.players.map((p) => playerRow(p, p.contract <= 1 ? '<em class="badge">1 сезон</em>' : '')).join('')}
     </section>
     <section class="block">
       <div class="row"><h3>Запас</h3><span class="dim small">${roster(me).length}/${ROSTER_MAX} игроков</span></div>
       ${me.bench.length ? me.bench.map((p) => playerRow(p)).join('') : '<p class="dim small">Запасных нет. Игроков можно купить на рынке или перевести из академии.</p>'}
     </section>
-    <p class="dim small center">Зарплаты состава: ${wage} в неделю. Нажмите на игрока, чтобы заменить, продать или продлить контракт.</p>`);
+    ${trainingBlock()}
+    <p class="dim small center">Зарплаты состава: ${wage} в неделю</p>`);
   on('[data-p]', (el) => playerSheet(findPlayer(el.dataset.p!)));
   on('[data-train]', (b) => {
     setFocus(season, b.dataset.train as Training);
@@ -562,6 +593,8 @@ function market() {
 
 // ---------- Клуб: спонсоры, персонал, академия, повторы, история ----------
 
+let clubTab: 'money' | 'staff' | 'academy' | 'archive' = 'money';
+
 function club() {
   const sp = season.sponsor;
   const staff = (Object.keys(STAFF_INFO) as StaffRole[])
@@ -580,30 +613,42 @@ function club() {
     : season.academy.length
       ? season.academy.map((p) => playerRow(p, `<em class="dim small">потенциал ${potentialText(season, p)}</em>`)).join('')
       : '<p class="dim small">Пока пусто: новые таланты придут в начале сезона.</p>';
-  shell('club', `
-    <section class="block"><h3>Спонсор и болельщики</h3>
-      <div class="row"><span>Болельщиков</span><b>${season.fans.toLocaleString('ru')}</b></div>
-      <p class="dim small">Победы и трофеи приводят новых болельщиков. Каждую неделю с матчем клуб получает за билеты ${Math.round(season.fans * 0.6).toLocaleString('ru')}.</p>
+  const tabs = segTabs('ct', clubTab, [
+    ['money', 'Деньги'],
+    ['staff', 'Персонал'],
+    ['academy', 'Академия'],
+    ['archive', 'Архив'],
+  ]);
+  const body: Record<typeof clubTab, string> = {
+    money: `<section class="block"><h3>Болельщики</h3>
+      <div class="big-num">${season.fans.toLocaleString('ru')}<small>болельщиков · билеты ${Math.round(season.fans * 0.6).toLocaleString('ru')} за домашнюю неделю</small></div></section>
+      <section class="block"><h3>Спонсор сезона</h3>
       ${sp
         ? `<div class="sponsor on"><b>${esc(sp.name)}</b><small>${sponsorText(sp)}</small></div>`
-        : `<p class="warn small">Выберите спонсора на сезон:</p>${season.offers.map((o) => `<button class="sponsor" data-sp="${o.id}"><b>${esc(o.name)}</b><small>${sponsorText(o)}</small></button>`).join('')}`}
-    </section>
-    <section class="block"><h3>Персонал</h3>${staff}</section>
-    <section class="block"><h3>Академия</h3>${acad}</section>
-    <section class="block"><h3>Повторы матчей</h3>${season.replays.length
+        : `<p class="warn small">Выберите одного спонсора на весь сезон:</p>${season.offers.map((o) => `<button class="sponsor" data-sp="${o.id}"><b>${esc(o.name)}</b><small>${sponsorText(o)}</small></button>`).join('')}`}
+      </section>`,
+    staff: `<section class="block">${staff}</section>`,
+    academy: `<section class="block">${acad}</section>`,
+    archive: `<section class="block"><h3>Повторы матчей</h3>${season.replays.length
       ? season.replays.map((r) => `<button class="prow" data-r="${r.id}"><span class="posl">${ICON.play(14)}</span><div class="pmain"><b>${esc(r.label)}</b></div></button>`).join('')
       : '<p class="dim small">Здесь появятся ваши последние матчи.</p>'}</section>
+    <button class="qrow" id="achs">${ICON.star(18)}<b>Достижения</b><span>${season.achievements.length} из ${ACHIEVEMENTS.length}</span>${CHEV}</button>
+    <section class="block"><h3>История клуба</h3>${season.history.length
+      ? season.history.map((h) => `<div class="row"><span>Сезон ${h.season}</span><span>${h.place}-е место${h.titles.length ? ' · ' + h.titles.length + ' ' + ICON.star(14) : ''}</span></div>`).join('')
+      : '<p class="dim small">Первый сезон клуба ещё идёт.</p>'}</section>
     <section class="block"><h3>Сохранение</h3>
-      <p class="dim small">Игра сохраняется сама после каждого действия. Файл сохранения можно перенести на другое устройство или оставить на всякий случай.</p>
+      <p class="dim small">Игра сохраняется сама. Файл нужен, чтобы перенести клуб на другое устройство.</p>
       <div class="acts-row"><button class="chip on" id="exp">${ICON.save(16)}Сохранить в файл</button><button class="chip" id="imp">Загрузить из файла</button></div>
       ${hasBackup() ? '<button class="chip" id="bak">Вернуть начало прошлой недели</button>' : ''}
       <button class="chip" id="newg">Начать новую игру</button>
       <input type="file" id="impf" accept=".json,application/json" hidden>
-    </section>
-    <section class="block"><h3>Достижения · ${season.achievements.length} из ${ACHIEVEMENTS.length}</h3><button class="chip" id="achs">Посмотреть все</button></section>
-    <section class="block"><h3>История клуба</h3>${season.history.length
-      ? season.history.map((h) => `<div class="row"><span>Сезон ${h.season}</span><span>${h.place}-е место${h.titles.length ? ' · ' + h.titles.length + ' ' + ICON.star(14) : ''}</span></div>`).join('')
-      : '<p class="dim small">Первый сезон клуба ещё идёт.</p>'}</section>`);
+    </section>`,
+  };
+  shell('club', tabs + `<div class="pane">${body[clubTab]}</div>`);
+  bindSeg('ct', (v) => {
+    clubTab = v as typeof clubTab;
+    club();
+  });
   on('[data-sp]', (b) => {
     chooseSponsor(season, season.offers.find((o) => o.id === b.dataset.sp)!);
     club();
@@ -621,6 +666,7 @@ function club() {
       club();
     };
   on('[data-p]', (el) => prospectSheet(findPlayer(el.dataset.p!)));
+  if (clubTab !== 'archive') return;
   saveControls();
   document.getElementById('achs')!.onclick = achSheet;
   document.getElementById('newg')!.onclick = () => {
@@ -770,14 +816,10 @@ function calendarHtml() {
 }
 
 function table() {
-  const seg = `<div class="seg rtabs2">${(
-    [
-      ['table', 'Таблица'],
-      ['cal', 'Календарь'],
-    ] as const
-  )
-    .map(([k, l]) => `<button class="chip ${tableTab === k ? 'on' : ''}" data-tt="${k}">${l}</button>`)
-    .join('')}</div>`;
+  const seg = segTabs('tt', tableTab, [
+    ['table', 'Таблица'],
+    ['cal', 'Календарь'],
+  ]);
   if (tableTab === 'cal') {
     shell('table', seg + calendarHtml());
     bindTableTabs();
@@ -811,13 +853,10 @@ function table() {
 }
 
 function bindTableTabs() {
-  app.querySelectorAll<HTMLButtonElement>('[data-tt]').forEach(
-    (b) =>
-      (b.onclick = () => {
-        tableTab = b.dataset.tt as 'table' | 'cal';
-        table();
-      }),
-  );
+  bindSeg('tt', (v) => {
+    tableTab = v as 'table' | 'cal';
+    table();
+  });
 }
 
 // ---------- Мета и патчи ----------
@@ -1079,7 +1118,8 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
     document.getElementById('go')!.onclick = () => {
       const p: [string[], string[]] = mySide === 0 ? [mine, theirs] : [theirs, mine];
       const st: [Strategy, Strategy] = mySide === 0 ? [strat, foeStrat] : [foeStrat, strat];
-      playMatch(new Match(matchSetup(season, teams, p, season.seed + season.week * 977 + season.seasonNo * 13, { strategies: st, big: humanFixture(season)!.stage !== 'league' })), 'live');
+      const m = new Match(matchSetup(season, teams, p, season.seed + season.week * 977 + season.seasonNo * 13, { strategies: st, big: humanFixture(season)!.stage !== 'league' }));
+      vsIntro(teams, STAGE_NAMES[humanFixture(season)!.stage], () => playMatch(m, 'live'));
     };
   };
   render();
@@ -1142,6 +1182,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       <button id="skip" aria-label="К итогам">${ICON.skip(18)}<span>${mode === 'replay' ? 'Выход' : 'Итог'}</span></button>
     </div></div>`);
   setAudioMode('match');
+  document.body.classList.add('in-match'); // фон меню на время матча выключен
   const cv = document.getElementById('cv') as HTMLCanvasElement;
   const ctx = cv.getContext('2d')!;
   let speed = 1;
@@ -1413,7 +1454,10 @@ function statsHtml(m: Match) {
 
 // Итоги в две вкладки: «Разбор» и «Статистика»
 function matchTabs(m: Match, review: string) {
-  return `<div class="seg rtabs" role="tablist"><button class="chip on" data-rt="sum" role="tab">Разбор</button><button class="chip" data-rt="stats" role="tab">Статистика</button></div>
+  return `${segTabs('rt', 'sum', [
+    ['sum', 'Разбор'],
+    ['stats', 'Статистика'],
+  ]).replace('class="segtabs"', 'class="segtabs rtabs"')}
     <div class="rpane" data-p="sum">${summaryHtml(m)}${review}</div>
     <div class="rpane" data-p="stats" hidden>${statsHtml(m)}</div>`;
 }
@@ -1424,6 +1468,7 @@ function bindMatchTabs(root: HTMLElement) {
     (b) =>
       (b.onclick = () => {
         root.querySelectorAll('[data-rt]').forEach((x) => x.classList.toggle('on', x === b));
+        root.querySelector<HTMLElement>('.segtabs')?.style.setProperty('--i', b.dataset.rt === 'sum' ? '0' : '1');
         root.querySelectorAll<HTMLElement>('.rpane').forEach((p) => (p.hidden = p.dataset.p !== b.dataset.rt));
         sh.scrollTop = 0;
       }),
@@ -1513,5 +1558,77 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => save(season));
 
-if (saved) home();
-else newGame(false);
+// ---------- Заставки ----------
+
+// Заставка перед матчем: гербы съезжаются, VS, название стадии. Касание пропускает.
+function vsIntro(teams: [Team, Team], stage: string, then: () => void) {
+  if (reduced()) return then();
+  const [a, b] = teams;
+  const o = document.createElement('div');
+  o.className = 'vsi';
+  o.innerHTML = `<div class="vsi-half l" style="--c:${SIDE_COLORS[0]}">${crest(SIDE_COLORS[0], a.tag, 96, a.emblem)}<b>${esc(a.name)}</b></div>
+    <div class="vsi-half r" style="--c:${SIDE_COLORS[1]}">${crest(SIDE_COLORS[1], b.tag, 96, b.emblem)}<b>${esc(b.name)}</b></div>
+    <div class="vsi-mid"><span class="vsi-vs">VS</span><small>${esc(stage[0].toUpperCase() + stage.slice(1))}</small></div>`;
+  app.appendChild(o);
+  sfx('cheer', 0.8);
+  setTimeout(() => sfx('heavy'), 420);
+  let done = false;
+  const go = () => {
+    if (done) return;
+    done = true;
+    o.classList.add('out');
+    setTimeout(() => {
+      o.remove();
+      then();
+    }, 260);
+  };
+  o.onclick = go;
+  setTimeout(go, 2300);
+}
+
+// Титульный экран: живая сцена, лого, герои, продолжить или новая карьера
+function title() {
+  const pool = ['hawk', 'granite', 'aurora', 'shade', 'ember'].map((id) => champById(id));
+  const me = saved ? humanTeam(season) : null;
+  const when = me ? (season.finished ? 'межсезонье' : `неделя ${season.week} из ${totalWeeks(season)}`) : '';
+  swap(`<div class="screen title-screen">
+    <div class="ts-beams" aria-hidden="true"><i></i><i></i></div>
+    <div class="ts-logo"><span class="ts-a">АРЕНА</span><span class="ts-m">МЕНЕДЖЕР</span><small>киберспортивный клуб в ваших руках</small></div>
+    <div class="ts-heroes" aria-hidden="true">${pool.map((c, i) => `<span style="--i:${i}">${img(c)}</span>`).join('')}</div>
+    <div class="ts-menu">
+      ${me ? `<button class="ts-card" id="cont">${crest(me.color, me.tag, 40, me.emblem)}<div><b>${esc(me.name)}</b><small>Сезон ${season.seasonNo} · ${when}</small></div><span class="ts-play">${ICON.play(18)}</span></button>` : ''}
+      <button class="cta wide" id="${me ? 'cont2' : 'new'}">${me ? 'Продолжить' : 'Новая карьера'}</button>
+      <div class="ts-row">${me ? '<button class="chip" id="new">Новая карьера</button>' : ''}<button class="chip" id="tsnd">${ICON.sound(14)} Звук</button></div>
+    </div></div>`);
+  const cont = () => {
+    sfx('click');
+    home();
+  };
+  document.getElementById('cont')?.addEventListener('click', cont);
+  document.getElementById('cont2')?.addEventListener('click', cont);
+  document.getElementById('new')!.onclick = () => {
+    if (!me) return newGame(false);
+    const c = sheet(`<h2>Новая карьера?</h2><p class="dim">Текущий клуб будет удалён. Чтобы вернуться к нему позже, сначала сохраните его в файл во вкладке «Клуб».</p><button class="cta wide" id="yes">Создать новый клуб</button>`);
+    c.el.querySelector<HTMLButtonElement>('#yes')!.onclick = () => {
+      c.close();
+      newGame(true);
+    };
+  };
+  document.getElementById('tsnd')!.onclick = soundSheet;
+}
+
+// Живой фон меню: лучи прожекторов и пылинки в свете. Только transform и opacity.
+(function ambient() {
+  const bg = document.createElement('div');
+  bg.id = 'bg';
+  bg.setAttribute('aria-hidden', 'true');
+  let dust = '';
+  for (let i = 0; i < 14; i++) {
+    const x = (i * 37) % 100;
+    dust += `<i style="left:${x}%;--d:${8 + ((i * 7) % 9)}s;--w:${-((i * 13) % 17)}s;--s:${0.5 + ((i * 3) % 5) / 5}"></i>`;
+  }
+  bg.innerHTML = `<div class="beam b1"></div><div class="beam b2"></div><div class="dust">${dust}</div>`;
+  document.body.prepend(bg);
+})();
+
+title();
