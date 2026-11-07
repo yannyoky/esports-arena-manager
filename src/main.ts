@@ -3,14 +3,18 @@ import '@fontsource/russo-one/400.css';
 import '@fontsource/golos-text/400.css';
 import '@fontsource/golos-text/600.css';
 import './style.css';
-import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, Champion, POS_NAMES, POS_ROLES, Player, Pos, ROLE_NAMES, Role, SIDE_COLORS, TRAIT_INFO, Team, champById, ovr, value } from './data';
+import { Capacitor } from '@capacitor/core';
+import { Directory, Encoding, Filesystem } from '@capacitor/filesystem';
+import { Share } from '@capacitor/share';
+import { Haptics, ImpactStyle } from '@capacitor/haptics';
+import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, pool, Champion, POS_NAMES, POS_ROLES, Player, Pos, ROLE_NAMES, Role, SIDE_COLORS, TRAIT_INFO, Team, champById, ovr, value } from './data';
 import { DraftState, ORDER, PHASE_NAME, aiChoice, apply, assign, done, newDraft, taken } from './draft';
 import { BASE_RULES, Note, PATCH_EVERY, RULE_INFO, Rules, fmtRule, heroPower, modOf, priority, tier } from './meta';
 import { EMBLEMS, ICON, crest } from './icons';
 import { ACHIEVEMENTS, ClubEvent, goalNow, goalText, resolveEvent } from './club';
 import {
   ACADEMY_COST, ACADEMY_WEEKLY, Deal, Fixture, LEAGUE_WEEKS, ROSTER_MAX, STAFF_INFO, STAFF_MAX, STAGE_NAMES, Season, Stage, StaffRole,
-  TRAINING_NAMES, TRAINING_TEXT, Training, acceptChance, asking, setFocus, canTalk, chemistry, chooseSponsor, dropProspect, finishWeek, hireStaff,
+  TRAINING_NAMES, TRAINING_TEXT, Training, acceptChance, asking, setFocus, canTalk, chemistry, chooseSponsor, dropProspect, finishWeek, hireStaff, FAC_INFO, FAC_MAX, Facility, buildFacility, facCost, facUpkeep, ticketIncome,
   exportSave, hasBackup, loadBackup, parseSave, DIFFICULTY, Difficulty,
   humanFixture, humanTeam, load, matchRecord, matchSetup, negotiate, newSeason, openAcademy, owner, potentialText, release, roster,
   save, saveReplay, sell, sellPrice, signingBonus, sponsorText, staffCost, staffSalary, standings, startNextSeason, swapStarter,
@@ -23,7 +27,7 @@ import { audioSettings, setAudioMode, setMusic, setVolume, sfx, unlockAudio } fr
 import { juiceOpts, juiceTick, timeScale } from './juice';
 import { Rng } from './rng';
 import { LANE_NAMES } from './map';
-import { MATCH_TIME, Match, NEUTRAL_NAMES, STRATEGY_TEXT, Strategy, autoStrategy } from './sim';
+import { COUNTERS, MATCH_TIME, Match, NEUTRAL_NAMES, STRATEGY_TEXT, Strategy, autoStrategy } from './sim';
 
 const app = document.getElementById('app')!;
 const saved = load();
@@ -54,11 +58,26 @@ document.addEventListener('pointerdown', (e) => {
 });
 juiceOpts.motion = !reduced();
 
+// Вибрация на важных событиях матча: в приложении через Haptics, в браузере через vibrate
+let vibeOn = (() => {
+  try {
+    return localStorage.getItem('arena-vibe') !== 'off';
+  } catch {
+    return true;
+  }
+})();
+function buzz(level: 0 | 1 | 2) {
+  if (!vibeOn) return;
+  if (Capacitor.isNativePlatform()) Haptics.impact({ style: [ImpactStyle.Light, ImpactStyle.Medium, ImpactStyle.Heavy][level] }).catch(() => {});
+  else navigator.vibrate?.([12, 30, 70][level]);
+}
+
 function soundSheet() {
   const a = audioSettings();
   const s = sheet(`<h2>Звук</h2>
     <label class="vol"><span>Громкость</span><input type="range" min="0" max="100" value="${Math.round(a.vol * 100)}" id="vol"><b id="volv">${Math.round(a.vol * 100)}%</b></label>
     <label class="tog"><input type="checkbox" id="mus" ${a.music ? 'checked' : ''}><span>Музыка в меню и гул арены</span></label>
+    <label class="tog"><input type="checkbox" id="vib" ${vibeOn ? 'checked' : ''}><span>Вибрация в матче: убийства, башни и победа</span></label>
     <p class="hint">Эффекты ударов, умений и реакции толпы звучат всегда, если громкость не на нуле. Звук выключается, когда игра свёрнута.</p>
     <button class="cta wide" id="ok">Готово</button>`);
   const vol = s.el.querySelector<HTMLInputElement>('#vol')!;
@@ -70,6 +89,15 @@ function soundSheet() {
   };
   vol.onchange = () => sfx('hit');
   s.el.querySelector<HTMLInputElement>('#mus')!.onchange = (e) => setMusic((e.target as HTMLInputElement).checked);
+  s.el.querySelector<HTMLInputElement>('#vib')!.onchange = (e) => {
+    vibeOn = (e.target as HTMLInputElement).checked;
+    try {
+      localStorage.setItem('arena-vibe', vibeOn ? 'on' : 'off');
+    } catch {
+      /* без сохранения */
+    }
+    if (vibeOn) buzz(1);
+  };
   s.el.querySelector<HTMLButtonElement>('#ok')!.onclick = s.close;
 }
 
@@ -211,13 +239,20 @@ function playerRow(p: Player, right = '', cls = '') {
 
 function playerInfo(p: Player) {
   const t = owner(season, p);
+  const o = ovr(p);
+  const big = (label: string, v: number) => `<div class="pst"><small>${label}</small><b>${r1(v)}</b><i><u style="--v:${v}%"></u></i></div>`;
+  const meter = (label: string, v: number, bad: boolean) => `<div class="pmeter ${bad ? 'bad' : ''}"><small>${label}</small><i><u style="--v:${v}%"></u></i></div>`;
   return `<div class="pcard">
-    <div class="row"><b>${esc(p.nick)}</b><span class="pos">${POS_NAMES[p.pos]}</span></div>
-    <div class="dim small">${p.age} лет · ${t ? esc(t.name) : season.academy.includes(p) ? 'академия' : 'свободный агент'} · потенциал ${potentialText(season, p)} · стоимость ${value(p).toLocaleString('ru')}</div>
+    <div class="phead">
+      <span class="ovr big t${ovrTier(o)}"><b>${r1(o)}</b><small>${POS_SHORT[p.pos]}</small></span>
+      <div><b class="pnick">${esc(p.nick)}</b><span class="dim small">${POS_NAMES[p.pos]} · ${p.age} лет · ${t ? esc(t.tag) : season.academy.includes(p) ? 'академия' : 'свободный агент'}</span>
+      <span class="dim small">потенциал ${potentialText(season, p)} · стоимость ${value(p).toLocaleString('ru')}</span></div>
+    </div>
     ${p.trait ? `<div class="trait"><b>${TRAIT_INFO[p.trait].name}</b><span>${TRAIT_INFO[p.trait].text}</span></div>` : ''}
-    ${statBar('Атака', p.atk)}${statBar('Защита', p.def)}${statBar('Тактика', p.iq)}${statBar('Форма', p.form)}${statBar('Настроение', p.morale)}${statBar('Усталость', p.fatigue)}
-    <div class="favline"><span class="dim small">Любимые герои</span>${p.favs.map((id) => `${img(champById(id), 'xs')}<small>${champById(id).name}</small>`).join('')}</div>
-    <div class="roles">${[...ALL_ROLES].sort((a, b) => p.pool[b] - p.pool[a]).slice(0, 3).map((r) => `<span class="chip">${ROLE_NAMES[r]} ${p.pool[r]}</span>`).join('')}</div>
+    <div class="pstats">${big('Атака', p.atk)}${big('Защита', p.def)}${big('Тактика', p.iq)}</div>
+    <div class="pmeters">${meter('Форма', p.form, p.form < 60)}${meter('Настроение', p.morale, p.morale < 40)}${meter('Усталость', p.fatigue, p.fatigue > 60)}</div>
+    <div class="pfavs">${p.favs.map((id) => `<span>${img(champById(id), 'sm')}<small>${champById(id).name}</small></span>`).join('')}
+      <div class="roles">${[...ALL_ROLES].sort((a, b) => p.pool[b] - p.pool[a]).slice(0, 3).map((r) => `<span class="chip">${ROLE_NAMES[r]} ${p.pool[r]}</span>`).join('')}</div></div>
     ${t || season.academy.includes(p) ? `<div class="dim small">Зарплата ${p.salary} в неделю${t?.human ? ` · контракт ещё ${Math.max(0, p.contract)} сез. · ${mood(p)}` : ''}</div>` : ''}
   </div>`;
 }
@@ -343,6 +378,7 @@ function home() {
   shell('home', `${eventsHtml()}${top}${strip}<div class="qlist">${rows}</div>${logCard()}`);
   bindEvents();
   showNewAch();
+  showNewHeroes();
   const gl = document.getElementById('goals');
   if (gl) gl.onclick = () => goalsSheet();
   document.getElementById('focus')!.onclick = () => rosterScreen();
@@ -356,7 +392,10 @@ function home() {
     };
   const sp = document.getElementById('sp');
   if (sp) sp.onclick = () => club();
-  document.getElementById('patch')!.onclick = () => metaScreen();
+  document.getElementById('patch')!.onclick = () => {
+    metaTab = 'patch';
+    metaScreen();
+  };
 }
 
 // ---------- События клуба, цели и достижения ----------
@@ -406,6 +445,22 @@ function achSheet() {
     const got = season.achievements.includes(a.id);
     return `<div class="ach ${got ? 'got' : ''}"><i>${got ? ICON.star(18) : '?'}</i><div><b>${a.name}</b><small>${a.text}</small></div></div>`;
   }).join('')}</div><button class="cta wide" id="ok">Закрыть</button>`);
+  s.el.querySelector<HTMLButtonElement>('#ok')!.onclick = s.close;
+}
+
+// Большой патч: представляем новых героев
+function showNewHeroes() {
+  if (!season.newHeroes?.length || app.querySelector('.overlay')) return;
+  const ids = season.newHeroes;
+  season.newHeroes = [];
+  save(season);
+  const s = sheet(`<div class="nh"><div class="nh-k">Большой патч ${season.meta.patch.ver}</div><h2>Новые герои</h2>
+    ${ids.map((id, i) => {
+      const c = champById(id);
+      return `<div class="nh-card" style="--d:${i * 120}ms">${img(c)}<div><b>${c.name}</b><small class="nh-role">${c.title} · ${ROLE_NAMES[c.role]}</small><small>${ABILITY_TEXT[c.ab]}</small></div></div>`;
+    }).join('')}
+    <p class="dim small">Герои уже доступны в драфте и в мете.</p>
+    <button class="cta wide" id="ok">Отлично</button></div>`);
   s.el.querySelector<HTMLButtonElement>('#ok')!.onclick = s.close;
 }
 
@@ -608,6 +663,16 @@ function club() {
       </div>`;
     })
     .join('');
+  const facs = (Object.keys(FAC_INFO) as Facility[])
+    .map((f) => {
+      const l = season.fac[f];
+      return `<div class="staff fac">
+        <div><b>${FAC_INFO[f].name} <span class="lv">${'●'.repeat(l)}${'○'.repeat(FAC_MAX - l)}</span></b><small>${l ? `уровень ${l} · содержание ${facUpkeep(l)} в неделю` : 'не построено'}</small>
+        <ul><li>${FAC_INFO[f].text}</li></ul></div>
+        ${l < FAC_MAX ? `<button class="chip on" data-fac="${f}">${l ? 'Улучшить' : 'Построить'} · ${facCost(l + 1).toLocaleString('ru')}</button>` : '<span class="dim small">максимум</span>'}
+      </div>`;
+    })
+    .join('');
   const acad = !season.academyOpen
     ? `<p class="dim small">Академия растит молодых игроков 15–17 лет с высоким потенциалом. Каждый сезон приходят новые. Открытие ${ACADEMY_COST.toLocaleString('ru')}, содержание ${ACADEMY_WEEKLY} в неделю.</p>
        <button class="cta wide" id="acad">Открыть академию</button>`
@@ -622,12 +687,13 @@ function club() {
   ]);
   const body: Record<typeof clubTab, string> = {
     money: `<section class="block"><h3>Болельщики</h3>
-      <div class="big-num">${season.fans.toLocaleString('ru')}<small>болельщиков · билеты ${Math.round(season.fans * 0.6).toLocaleString('ru')} за домашнюю неделю</small></div></section>
+      <div class="big-num">${season.fans.toLocaleString('ru')}<small>болельщиков · билеты ${ticketIncome(season).toLocaleString('ru')} за неделю с матчем</small></div></section>
       <section class="block"><h3>Спонсор сезона</h3>
       ${sp
         ? `<div class="sponsor on"><b>${esc(sp.name)}</b><small>${sponsorText(sp)}</small></div>`
         : `<p class="warn small">Выберите одного спонсора на весь сезон:</p>${season.offers.map((o) => `<button class="sponsor" data-sp="${o.id}"><b>${esc(o.name)}</b><small>${sponsorText(o)}</small></button>`).join('')}`}
-      </section>`,
+      </section>
+      <section class="block"><h3>База клуба</h3>${facs}</section>`,
     staff: `<section class="block">${staff}</section>`,
     academy: `<section class="block">${acad}</section>`,
     archive: `<section class="block"><h3>Повторы матчей</h3>${season.replays.length
@@ -652,6 +718,11 @@ function club() {
   });
   on('[data-sp]', (b) => {
     chooseSponsor(season, season.offers.find((o) => o.id === b.dataset.sp)!);
+    club();
+  });
+  on('[data-fac]', (b) => {
+    const err = buildFacility(season, b.dataset.fac as Facility);
+    toast(err || 'Построено');
     club();
   });
   on('[data-hire]', (b) => {
@@ -711,6 +782,16 @@ function saveControls() {
         }
         return;
       }
+    }
+    // В приложении для Android: пишем файл в кэш и открываем меню «Поделиться» (Диск, Telegram, Файлы)
+    if (Capacitor.isNativePlatform()) {
+      try {
+        const { uri } = await Filesystem.writeFile({ path: name, data: text, directory: Directory.Cache, encoding: Encoding.UTF8 });
+        await Share.share({ title: 'Сохранение Арена Менеджер', files: [uri], dialogTitle: 'Куда сохранить клуб?' });
+      } catch (e) {
+        if (!/cancel/i.test(String((e as Error)?.message ?? e))) toast('Не получилось сохранить файл');
+      }
+      return;
     }
     const file = new File([text], name, { type: 'application/json' });
     try {
@@ -870,6 +951,7 @@ function noteRow(n: Note) {
     <div><b>${esc(n.text)}</b><small>${esc(why)}</small></div></li>`;
 }
 
+let metaTab: 'patch' | 'tiers' | 'stats' | 'rules' = 'patch';
 function metaScreen() {
   const m = season.meta;
   const p = m.patch;
@@ -878,11 +960,11 @@ function metaScreen() {
   const n = nextPatchIn();
   const tiers = (['S', 'A', 'B', 'C'] as const)
     .map((t) => {
-      const list = CHAMPIONS.filter((c) => tier(m, c.id) === t).sort((a, b) => heroPower(m, b.id) - heroPower(m, a.id));
+      const list = pool().filter((c) => tier(m, c.id) === t).sort((a, b) => heroPower(m, b.id) - heroPower(m, a.id));
       return `<div class="tier"><b class="t${t}">${t}</b><div>${list.map((c) => `<span class="th" title="${c.name}">${img(c, 'xs')}</span>`).join('') || '<span class="dim small">—</span>'}</div></div>`;
     })
     .join('');
-  const rows = [...CHAMPIONS]
+  const rows = [...pool()]
     .map((c) => ({ c, h: m.heroes[c.id] ?? { picks: 0, bans: 0, wins: 0, order: 0 } }))
     .sort((a, b) => priority(b.h) - priority(a.h))
     .slice(0, 8)
@@ -905,19 +987,31 @@ function metaScreen() {
     .slice(1)
     .map((h) => `<details class="hist"><summary>Патч ${h.ver} · неделя ${h.week}</summary><ul class="notes">${h.notes.map(noteRow).join('')}</ul></details>`)
     .join('');
-  shell('meta', `
-    <section class="block patch-head">
+  const tabs = segTabs('mtab', metaTab, [
+    ['patch', 'Патч'],
+    ['tiers', 'Тиры'],
+    ['stats', 'Статистика'],
+    ['rules', 'Правила'],
+  ]);
+  const body: Record<typeof metaTab, string> = {
+    patch: `<section class="block patch-head">
       <div class="row"><b>Патч ${p.ver}</b><span class="dim small">неделя ${p.week} · ${n ? `следующий через ${n} нед.` : 'последний в сезоне'}</span></div>
-      <p class="dim small">Раз в ${PATCH_EVERY} недели разработчики смотрят на статистику лиги: кого чаще берут и банят, кто побеждает. Сильных ослабляют, забытых усиливают, награды за убийства и объекты меняют.</p>
       <ul class="notes">${p.notes.map(noteRow).join('')}</ul>
     </section>
-    <section class="block"><h3>Тир-лист</h3>${tiers}</section>
-    <section class="block"><h3>Статистика патча</h3>${m.win.games
+    ${hist ? `<section class="block"><h3>Прошлые патчи</h3>${hist}</section>` : ''}`,
+    tiers: `<section class="block"><h3>Тир-лист</h3>${tiers}<p class="dim small">Сила героя на этом патче: изменения и победы в лиге.</p></section>`,
+    stats: `<section class="block"><h3>Статистика патча</h3>${m.win.games
       ? `<p class="dim small">Сыграно матчей на этом патче: ${m.win.games}. Самые приоритетные в драфте:</p>
       <table class="tbl"><thead><tr><th>Герой</th><th>Пик</th><th>Бан</th><th>Побед</th></tr></thead><tbody>${rows}</tbody></table>`
-      : '<p class="dim small">Статистика появится после первых матчей на этом патче.</p>'}</section>
-    <section class="block"><h3>Награды и правила</h3><table class="tbl rules"><tbody>${rules}</tbody></table></section>
-    ${hist ? `<section class="block"><h3>Прошлые патчи</h3>${hist}</section>` : ''}`);
+      : '<p class="dim small">Статистика появится после первых матчей на этом патче.</p>'}</section>`,
+    rules: `<section class="block"><h3>Награды и правила</h3><table class="tbl rules"><tbody>${rules}</tbody></table>
+      <p class="dim small">Раз в ${PATCH_EVERY} недели разработчики смотрят на статистику лиги: кого чаще берут и банят, кто побеждает. Сильных ослабляют, забытых усиливают. Большие патчи добавляют новых героев.</p></section>`,
+  };
+  shell('meta', tabs + `<div class="pane">${body[metaTab]}</div>`);
+  bindSeg('mtab', (v) => {
+    metaTab = v as typeof metaTab;
+    metaScreen();
+  });
 }
 
 // ---------- Драфт ----------
@@ -941,13 +1035,14 @@ function draft() {
 
   const bestFor = (c: Champion) => Math.max(...me.players.map((p) => p.pool[c.role]));
   const meta = season.meta;
-  const noteOf = (c: Champion) => meta.patch.notes.find((n) => n.id === c.id);
+  const noteOf = (c: Champion) => meta.patch.notes.find((n) => n.id === c.id && n.kind !== 'new');
+  const isNew = (c: Champion) => meta.patch.notes.some((n) => n.id === c.id && n.kind === 'new');
   const favOf = (c: Champion) => me.players.find((p) => p.favs.includes(c.id));
   let tip: string | null = null; // совет тренера по драфту
   const badge = (c: Champion) => {
     const n = noteOf(c);
     const t = tier(meta, c.id);
-    return `${t === 'S' ? '<i class="tier-s">S</i>' : ''}${n ? `<i class="pb ${n.kind}">${n.kind === 'buff' ? '▲' : '▼'}</i>` : ''}${favOf(c) ? '<i class="fav">♥</i>' : ''}${tip === c.id ? '<i class="tipl">совет</i>' : ''}`;
+    return `${isNew(c) ? '<i class="pb new">NEW</i>' : ''}${t === 'S' ? '<i class="tier-s">S</i>' : ''}${n ? `<i class="pb ${n.kind}">${n.kind === 'buff' ? '▲' : '▼'}</i>` : ''}${favOf(c) ? '<i class="fav">♥</i>' : ''}${tip === c.id ? '<i class="tipl">совет</i>' : ''}`;
   };
 
   const slots = (side: 0 | 1) => {
@@ -982,7 +1077,7 @@ function draft() {
     const st = ORDER[d.step];
     const myTurn = st && st.side === mySide;
     const tk = taken(d);
-    const list = CHAMPIONS.filter((c) => filter === 'all' || c.role === filter);
+    const list = pool().filter((c) => filter === 'all' || c.role === filter);
     const selC = sel ? champById(sel) : null;
     const poolEl = app.querySelector('.pool');
     const scroll = poolEl ? poolEl.scrollTop : 0;
@@ -1087,7 +1182,7 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
   let shown = false;
   const render = () => {
     swap(`<div class="screen lineup">
-      <header class="lineup-head"><h2>Расстановка</h2><p>Каждый игрок стоит на своей позиции. Нажмите на двух игроков, чтобы поменять их героев.</p></header>
+      <header class="lineup-head"><h2>Расстановка</h2><p>Нажмите на двух игроков, чтобы поменять их героев.</p></header>
       <div class="lanes">${me.players
         .map((p, i) => {
           const c = champById(mine[i]);
@@ -1098,9 +1193,15 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
             <em class="${p.pool[c.role] >= 70 ? 'good' : p.pool[c.role] < 45 ? 'bad' : ''}">${p.pool[c.role]}</em></button>`;
         })
         .join('')}</div>
-      <section class="strats"><h3>Стратегия на матч</h3>${(Object.keys(STRATEGY_TEXT) as Strategy[])
-        .map((k) => `<button class="strat ${strat === k ? 'on' : ''}" data-s="${k}"><b>${STRATEGY_TEXT[k][0]}</b><small>${STRATEGY_TEXT[k][1]}</small></button>`)
-        .join('')}<p class="dim small">Разведка: соперник, скорее всего, выберет «${STRATEGY_TEXT[foeStrat][0]}».</p></section>
+      <section class="strats"><h3>Стратегия на матч</h3>
+        <div class="strat-row">${(Object.keys(STRATEGY_TEXT) as Strategy[])
+          .map((k) => `<button class="strat ${strat === k ? 'on' : ''} ${COUNTERS[k] === foeStrat ? 'ctr' : ''}" data-s="${k}"><b>${STRATEGY_TEXT[k][0]}</b>${COUNTERS[k] === foeStrat ? '<i>контр</i>' : ''}</button>`)
+          .join('')}</div>
+        <p class="strat-desc">${STRATEGY_TEXT[strat][1]}</p>
+        <p class="scout">${ICON.eye(14)}<span>Разведка: соперник, скорее всего, выберет «${STRATEGY_TEXT[foeStrat][0]}». ${
+          COUNTERS[strat] === foeStrat ? `<b class="up">Ваш выбор сильнее против неё.</b>` : COUNTERS[foeStrat] === strat ? `<b class="down">Она сильнее против вашего выбора.</b>` : 'Равный расклад.'
+        }</span></p>
+        <p class="dim small">Охота бьёт Игру от линий, линии бьют Командный напор, напор бьёт Охоту.</p></section>
       <button class="cta wide" id="go">${ICON.play(18)} Начать матч</button></div>`, shown);
     shown = true;
     app.querySelectorAll<HTMLButtonElement>('[data-i]').forEach(
@@ -1175,6 +1276,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       <div class="cast" id="cast" aria-live="polite"></div></div>
     ${boardHtml(m)}
     <div class="ctrl">
+      <button id="pz" aria-label="Пауза">${ICON.pause(18)}<span>Пауза</span></button>
       <button data-speed="1" class="on" aria-label="Скорость 1">${ICON.play(18)}<span>1×</span></button>
       <button data-speed="2" aria-label="Скорость 2">${ICON.fast(18)}<span>2×</span></button>
       <button data-speed="4" aria-label="Скорость 4">${ICON.fast(18)}<span>4×</span></button>
@@ -1191,8 +1293,10 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
   let last = performance.now();
   let raf = 0;
   let running = true;
+  let paused = false;
   let dpr = 1;
   let feedLen = 0;
+  const mySide = mode === 'live' ? m.setup.teams.findIndex((t) => t.human) : -1;
   // Комментаторы: очередь реплик, каждая держится на экране пару секунд
   const caster = new Caster(m);
   let queue: Line[] = [];
@@ -1298,7 +1402,13 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     }
     const key = m.s.feed.length + (m.s.feed[0]?.t ?? 0);
     if (key !== feedLen) {
+      const fresh = feedLen !== 0;
       feedLen = key;
+      const k0 = m.s.feed[0];
+      if (fresh && mySide >= 0 && k0 && m.fxOn) {
+        if (k0.kind === 'kill' && k0.victim.side !== mySide) buzz(0);
+        else if (k0.kind === 'tower' && k0.side !== mySide) buzz(1);
+      }
       document.getElementById('feed')!.innerHTML = m.s.feed
         .slice(0, 3)
         .map((k) => {
@@ -1342,7 +1452,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     if (document.hidden) {
       running = false;
       cancelAnimationFrame(raf);
-    } else if (!m.s.over && !running) {
+    } else if (!m.s.over && !running && !paused) {
       running = true;
       last = performance.now();
       raf = requestAnimationFrame(frame);
@@ -1363,6 +1473,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     m.fxOn = false;
     m.runToEnd();
     m.s.fx = [];
+    if (mySide >= 0 && m.s.winner === mySide) buzz(2);
     drawMatch(ctx, m, cv.width, cv.height, dpr, autoCam);
     hud();
     if (mode === 'live') result(m);
@@ -1382,6 +1493,22 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
       }),
   );
   document.getElementById('skip')!.onclick = end;
+  // Пауза: останавливаем и симуляцию, и отрисовку, чтобы телефон отдыхал
+  document.getElementById('pz')!.onclick = (e) => {
+    const b = e.currentTarget as HTMLElement;
+    paused = !paused;
+    b.classList.toggle('on', paused);
+    b.innerHTML = paused ? `${ICON.play(18)}<span>Дальше</span>` : `${ICON.pause(18)}<span>Пауза</span>`;
+    app.querySelector('.field')?.classList.toggle('paused', paused);
+    if (paused) {
+      running = false;
+      cancelAnimationFrame(raf);
+    } else if (!m.s.over) {
+      running = true;
+      last = performance.now();
+      raf = requestAnimationFrame(frame);
+    }
+  };
   document.getElementById('brd')!.onclick = (e) => {
     showBoard = !showBoard;
     (e.currentTarget as HTMLElement).classList.toggle('on', showBoard);

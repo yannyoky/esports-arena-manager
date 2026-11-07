@@ -100,9 +100,38 @@ export const CHAMPIONS: Champion[] = [
   { id: 'shade', name: 'Тень', title: 'Ночной клинок', role: 'assassin', hp: 780, dmg: 70, range: 32, atkCd: 0.8, speed: 96, abilityCd: 6, ab: 'vanish', look: { body: 'slim', weapon: 'daggers', head: 'hood', skin: S.ash, cloth: '#2d2838', trim: '#b28cff', hair: '#1a1720' } },
   { id: 'fang', name: 'Клык', title: 'Дикий охотник', role: 'assassin', hp: 820, dmg: 66, range: 32, atkCd: 0.8, speed: 94, abilityCd: 6.5, ab: 'dash', look: { body: 'slim', weapon: 'daggers', head: 'ears', skin: S.tan, cloth: '#5a4636', trim: '#e8e1d4', hair: '#9b8a76' } },
   { id: 'reaper', name: 'Жнец', title: 'Полевой призрак', role: 'assassin', hp: 800, dmg: 74, range: 40, atkCd: 0.95, speed: 90, abilityCd: 7, ab: 'dash', look: { body: 'slim', weapon: 'scythe', head: 'mask', skin: S.pale, cloth: '#3b3f36', trim: '#c8e86b', hair: '#d9d6c8' } },
+  // Выходят позже, с большими патчами (см. RELEASES)
+  { id: 'gale', name: 'Шквал', title: 'Ветреная стрелица', role: 'shooter', hp: 700, dmg: 54, range: 205, atkCd: 0.72, speed: 76, abilityCd: 6.5, ab: 'volley', look: { body: 'slim', weapon: 'bow', head: 'hair', skin: S.pale, cloth: '#3a8fa0', trim: '#e8f6f8', hair: '#f2f4f6' } },
+  { id: 'tide', name: 'Прилив', title: 'Черепаший страж', role: 'tank', hp: 1580, dmg: 34, range: 34, atkCd: 1.1, speed: 66, abilityCd: 8.5, ab: 'bulwark', look: { body: 'heavy', weapon: 'shield', head: 'hair', skin: '#7fb08a', cloth: '#3e6e5c', trim: '#e3c27a', hair: '#2f5446' } },
+  { id: 'nova', name: 'Нова', title: 'Звёздная ведьма', role: 'mage', hp: 690, dmg: 52, range: 172, atkCd: 1.2, speed: 70, abilityCd: 7, ab: 'fireball', look: { body: 'robe', weapon: 'staff', head: 'hair', skin: S.violet, cloth: '#3a2a6e', trim: '#f4e27a', hair: '#e6dcff' } },
+  { id: 'moss', name: 'Мох', title: 'Грибной шаман', role: 'support', hp: 790, dmg: 28, range: 145, atkCd: 1.1, speed: 72, abilityCd: 6, ab: 'mend', look: { body: 'robe', weapon: 'staff', head: 'hood', skin: S.moss, cloth: '#5b6e3a', trim: '#c9ff8a', hair: '#c8433a' } },
+  { id: 'wisp', name: 'Блик', title: 'Лисья маска', role: 'assassin', hp: 790, dmg: 68, range: 32, atkCd: 0.78, speed: 98, abilityCd: 6, ab: 'vanish', look: { body: 'slim', weapon: 'daggers', head: 'mask', skin: S.pale, cloth: '#2b2433', trim: '#ff8a3c', hair: '#e86a2a' } },
+  { id: 'rook', name: 'Ладья', title: 'Северный рубака', role: 'fighter', hp: 1100, dmg: 62, range: 40, atkCd: 1.0, speed: 80, abilityCd: 6.5, ab: 'leap', look: { body: 'medium', weapon: 'axe', head: 'helm', skin: S.tan, cloth: '#5a6b7a', trim: '#d8dde2', hair: '#c9862e' } },
 ];
 
 export const champById = (id: string) => CHAMPIONS.find((c) => c.id === id)!;
+
+// Новые герои выходят с большими патчами: сезон и неделя выхода
+export const RELEASES: { id: string; season: number; week: number }[] = [
+  { id: 'gale', season: 1, week: 7 },
+  { id: 'tide', season: 2, week: 1 },
+  { id: 'nova', season: 2, week: 1 },
+  { id: 'moss', season: 2, week: 7 },
+  { id: 'wisp', season: 3, week: 1 },
+  { id: 'rook', season: 3, week: 1 },
+];
+const released = (id: string, season: number, week: number) => {
+  const r = RELEASES.find((x) => x.id === id);
+  return !r || season > r.season || (season === r.season && week >= r.week);
+};
+let active = new Set(CHAMPIONS.filter((c) => released(c.id, 1, 1)).map((c) => c.id));
+// Пул героев, доступных в драфте на эту неделю
+export const pool = () => CHAMPIONS.filter((c) => active.has(c.id));
+const heroPool = pool;
+export function setPool(season: number, week: number) {
+  active = new Set(CHAMPIONS.filter((c) => released(c.id, season, week)).map((c) => c.id));
+}
+export const releasesAt = (season: number, week: number) => RELEASES.filter((r) => r.season === season && r.week === week).map((r) => r.id);
 export const ALL_ROLES: Role[] = ['tank', 'fighter', 'shooter', 'mage', 'support', 'assassin'];
 
 // Позиция игрока в команде: 0 верх, 1 центр, 2 стрелок, 3 лес, 4 поддержка
@@ -184,7 +213,7 @@ export function makePlayer(rng: Rng, level: number, used: Set<string>, pos: Pos 
   pool[main] = Math.round(rng.range(70, 95));
   if (second) pool[second] = Math.round(rng.range(50, 80));
   // любимые герои — из ролей своей позиции
-  const mine = CHAMPIONS.filter((c) => POS_ROLES[pos].includes(c.role));
+  const mine = heroPool().filter((c) => POS_ROLES[pos].includes(c.role));
   const favs: string[] = [];
   while (favs.length < 2) {
     const c = rng.pick(mine);

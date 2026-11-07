@@ -1,7 +1,7 @@
 // Мета и патчи: лига копит статистику героев и матчей, раз в несколько недель
 // выходит патч. Он ослабляет героев, которых часто берут и которые много побеждают,
 // усиливает забытых и меняет награды за убийства, башни и объекты карты.
-import { CHAMPIONS, Role, champById } from './data';
+import { CHAMPIONS, Role, champById, pool } from './data';
 import { Rng } from './rng';
 import type { Strategy } from './sim';
 
@@ -31,7 +31,7 @@ export const BASE_RULES: Rules = {
   siegeTime: 60,
   colossusXp: 200,
   respawn: 1,
-  lanesXp: 1.25,
+  lanesXp: 1.14,
   pickBonus: 1.25,
 };
 
@@ -68,7 +68,7 @@ export interface HeroMod {
 export const NO_MOD: HeroMod = { hp: 1, dmg: 1, cd: 1 };
 
 export interface Note {
-  kind: 'buff' | 'nerf' | 'rule';
+  kind: 'buff' | 'nerf' | 'rule' | 'new';
   id?: string; // герой
   text: string;
   why: string;
@@ -262,7 +262,7 @@ export function makePatch(prev: Patch | null, m: Meta | null, week: number, rng:
 
   // --- Герои ---
   if (m && m.win.games > 0) {
-    const scored = CHAMPIONS.map((c) => {
+    const scored = pool().map((c) => {
       const h = m.heroes[c.id] ?? { picks: 0, bans: 0, wins: 0, order: 0 };
       const wr = winRate(h);
       const pr = priority(h);
@@ -275,13 +275,13 @@ export function makePatch(prev: Patch | null, m: Meta | null, week: number, rng:
     for (const x of scored.slice(-3).reverse()) if (x.score < -0.1) notes.push(changeHero(mods, x.c.id, true, rng, why(x)));
   } else {
     // Предсезонный патч: несколько случайных правок, чтобы сезоны отличались
-    const pool = [...CHAMPIONS];
-    for (let i = pool.length - 1; i > 0; i--) {
+    const list = pool();
+    for (let i = list.length - 1; i > 0; i--) {
       const j = rng.int(0, i);
-      [pool[i], pool[j]] = [pool[j], pool[i]];
+      [list[i], list[j]] = [list[j], list[i]];
     }
-    pool.slice(0, 2).forEach((c) => notes.push(changeHero(mods, c.id, true, rng, 'предсезонная доработка')));
-    pool.slice(2, 4).forEach((c) => notes.push(changeHero(mods, c.id, false, rng, 'предсезонная доработка')));
+    list.slice(0, 2).forEach((c) => notes.push(changeHero(mods, c.id, true, rng, 'предсезонная доработка')));
+    list.slice(2, 4).forEach((c) => notes.push(changeHero(mods, c.id, false, rng, 'предсезонная доработка')));
   }
 
   // --- Правила и награды ---

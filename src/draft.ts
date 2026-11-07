@@ -1,6 +1,6 @@
 // Драфт по турнирной схеме: две фазы банов и две фазы пиков.
 // Синяя сторона (0) выбирает первой, красная (1) получает два пика подряд.
-import { CHAMPIONS, Champion, POS_ROLES, Role, Team, ALL_ROLES } from './data';
+import { CHAMPIONS, Champion, pool, POS_ROLES, Role, Team, ALL_ROLES } from './data';
 import { Rng } from './rng';
 import { Meta, heroPower } from './meta';
 
@@ -65,7 +65,7 @@ const missingRoles = (team: Team, picks: string[]) => {
 // Капитан следит за метой: усиленных героев берёт и банит охотнее, ослабленных обходит
 export function aiChoice(d: DraftState, me: Team, foe: Team, rng: Rng, meta?: Meta): string {
   const st = ORDER[d.step];
-  const free = CHAMPIONS.filter((c) => !taken(d).has(c.id));
+  const free = pool().filter((c) => !taken(d).has(c.id));
   const pw = (c: Champion) => (meta ? heroPower(meta, c.id) * 110 : 0);
   const score = (c: Champion) => {
     if (st.act === 'ban') return teamFit(foe, c) + pw(c) + rng.range(0, 25);

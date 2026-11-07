@@ -14,6 +14,7 @@ export const ICON = {
   shield: (s?: number) => svg('<path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/>', s),
   brain: (s?: number) => svg('<path d="M9 4a3 3 0 0 0-3 3 3 3 0 0 0-2 5 3 3 0 0 0 2 5 3 3 0 0 0 6 1V5a2 2 0 0 0-3-1z"/><path d="M15 4a3 3 0 0 1 3 3 3 3 0 0 1 2 5 3 3 0 0 1-2 5 3 3 0 0 1-6 1"/>', s),
   rest: (s?: number) => svg('<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>', s),
+  pause: (s?: number) => svg('<path d="M8 5v14M16 5v14" stroke-width="3"/>', s),
   play: (s?: number) => svg('<path d="M7 5v14l11-7z" fill="currentColor"/>', s),
   fast: (s?: number) => svg('<path d="M4 6v12l8-6z" fill="currentColor"/><path d="M12 6v12l8-6z" fill="currentColor"/>', s),
   skip: (s?: number) => svg('<path d="M5 6v12l9-6z" fill="currentColor"/><path d="M18 6v12"/>', s),

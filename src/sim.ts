@@ -25,6 +25,10 @@ export const STRATEGY_TEXT: Record<Strategy, [string, string]> = {
 // Позиция игрока определяет его линию; лес бродит между линиями
 export type Slot = Pos;
 const laneOf = (slot: Slot): LaneId => (slot === 3 ? 1 : slot === 4 ? 2 : (slot as LaneId));
+const laneDist = (lane: LaneId, x: number, y: number) => {
+  const [lx, ly] = lanePoint(lane, nearestT(lane, x, y));
+  return Math.hypot(lx - x, ly - y);
+};
 
 export interface Ent {
   kind: 'hero' | 'creep' | 'tower' | 'core' | 'neutral';
@@ -159,7 +163,12 @@ export interface MatchSetup {
   patch?: Patch; // баланс текущего патча: множители героев и награды
   chem?: [number, number]; // сыгранность составов 0–1
   big?: boolean; // плей-офф или Кубок мира: важен характер игроков
+  ver?: number; // версия правил матча: старые повторы считаются по старым правилам
 }
+
+// Камень, ножницы, бумага: охота ловит линии, линии перерастают напор, напор задавливает охоту
+export const COUNTERS: Record<Strategy, Strategy> = { pick: 'lanes', lanes: 'group', group: 'pick' };
+export const COUNTER_BONUS = 1.07;
 
 export type FeedItem =
   | { kind: 'kill'; t: number; killer: Unit | null; victim: Unit }
@@ -387,6 +396,7 @@ export class Match {
     if (src) {
       dmg *= 1 + this.s.spirit[src.side] * this.R.spiritPct;
       // Охота: одиночек без союзников рядом бьём сильнее
+      if ((this.setup.ver ?? 1) >= 2 && COUNTERS[this.strat[src.side]] === this.strat[1 - src.side]) dmg *= COUNTER_BONUS;
       if (dst.kind === 'hero' && this.strat[src.side] === 'pick' && !this.s.units.some((o) => o !== dst && o.side === dst.side && o.dead <= 0 && dist(o, dst) < 250)) dmg *= this.R.pickBonus;
       if (dst.kind === 'tower' || dst.kind === 'core') {
         dmg *= 1 + src.level * 0.1; // опытные герои сносят строения быстрее
@@ -584,13 +594,35 @@ export class Match {
     const aggr = (strat === 'pick' ? 0.95 : 1) * (u.champ.role === 'tank' ? 0.9 : 1) * (u.player.trait === 'star' ? 0.88 : 1);
     const deadFoes = s.units.filter((e) => e.side !== u.side && e.dead > 4).length;
     const deadMine = s.units.filter((e) => e.side === u.side && e.dead > 0).length;
-    const numbers = deadFoes - deadMine >= 1;
-    const group = numbers || (strat === 'group' && s.time > 45) || (strat === 'lanes' && s.time > 150) || (strat === 'pick' && s.time > 120);
+    const v2 = (this.setup.ver ?? 1) >= 2;
+    // v2: один убитый в начале игры ещё не повод всей команде бросать линии
+    const numbers = v2 ? deadFoes - deadMine >= 2 || (deadFoes - deadMine >= 1 && s.time > 140) : deadFoes - deadMine >= 1;
+    const group = v2
+      ? numbers || (strat === 'group' && s.time > 120) || (strat === 'lanes' && s.time > 200) || (strat === 'pick' && s.time > 170)
+      : numbers || (strat === 'group' && s.time > 45) || (strat === 'lanes' && s.time > 150) || (strat === 'pick' && s.time > 120);
+    const attacking = (e: Unit) => e.intent.kind === 'attack' && e.intent.target === u && dist(u, e) < e.champ.range + 60;
+
+    // v2: лесник доводит начатый лагерь до конца и в начале игры сначала чистит лес
+    if (v2 && u.slot === 3 && !group) {
+      const threat = this.visibleEnemies(u, 260).some(attacking);
+      const it = u.intent;
+      const cur = it.kind === 'attack' && it.target.kind === 'neutral' && (it.target as Neutral).type === 'camp' && it.target.hp > 0 ? it.target : null;
+      if (cur && !threat) return (u.intent = { kind: 'attack', target: cur });
+      if (s.time < 45 && !threat) {
+        const camp = this.nextCamp(u, iq);
+        if (camp) return (u.intent = { kind: 'attack', target: camp });
+      }
+    }
     // На линии не гоняемся за врагом через всю карту: держимся своей точки
     const roamer = group || u.slot === 3 || (strat === 'pick' && u.slot === 1 && s.time > 40);
     const anchor = roamer ? null : this.laneAnchor(u, laneOf(u.slot));
     let target = this.chooseHeroTarget(u, 360);
     if (target && anchor && Math.hypot(target.x - anchor[0], target.y - anchor[1]) > 230) target = null;
+    if (v2 && target && !attacking(target)) {
+      // Линейный герой дерётся только на своей линии, лесник без группы — только рядом с собой
+      if (anchor && laneDist(laneOf(u.slot), target.x, target.y) > 120) target = null;
+      else if (!anchor && !group && u.slot === 3 && dist(u, target) > 200) target = null;
+    }
     if (target) {
       // Силы оцениваем там, где произойдёт драка: между нами и целью
       const mx = (u.x + target.x) / 2;
@@ -612,14 +644,19 @@ export class Match {
     // Защита: своё строение атакуют рядом
     for (const t of [...s.towers.filter((o) => o.side === u.side && o.hp > 0), homeCore]) {
       if (dist(u, t) > 520) continue;
-      const attackers = this.visibleEnemies(u, 2000).filter((e) => dist(e, t) < TOWER_RANGE + 20);
+      // v2: защищаем строение своей линии (или рядом стоящее) и только от тех, кто его реально бьёт
+      const attackers = this.visibleEnemies(u, 2000).filter(
+        (e) => dist(e, t) < TOWER_RANGE + 20 && (!v2 || (e.intent.kind === 'attack' && (e.intent.target === t || dist(e.intent.target, t) < TOWER_RANGE))),
+      );
+      // Чужую линию идём спасать только от группового натиска и не в самом начале
+      if (v2 && t.kind === 'tower' && anchor && (t as Tower).lane !== laneOf(u.slot) && (attackers.length < 2 || s.time < 60)) continue;
       if (attackers.length && this.advantage(u.side, t.x, t.y) + noise > 0.7)
         return (u.intent = { kind: 'attack', target: attackers.sort((a, b) => a.hp - b.hp)[0] });
     }
 
     // Нейтральные объекты: берём, когда у нас перевес или соперника рядом нет
     const obj = this.objectiveFor(u.side);
-    if (obj && (u.slot === 3 || u.slot === 4 || u.slot === 1 || dist(u, obj) < 450))
+    if (obj && (u.slot === 3 || u.slot === 4 || u.slot === 1 || dist(u, obj) < (v2 && !group ? 220 : 450)))
       return (u.intent = { kind: 'attack', target: obj });
 
     // Перевес в числе или стратегия: давим ближайшее строение всей командой
@@ -634,9 +671,7 @@ export class Match {
         return (u.intent = { kind: 'move', x: prey.x, y: prey.y });
       if (u.slot === 3) {
         // Лесник фармит лагеря на своей половине, умный заходит и к сопернику
-        const camp = s.neutrals
-          .filter((n) => n.type === 'camp' && n.respawn <= 0 && n.hp > 0 && ((n.homeX < 500) === (u.side === 0) || iq > 0.65))
-          .sort((a, b) => dist(u, a) - dist(u, b))[0];
+        const camp = this.nextCamp(u, iq);
         if (camp && !this.visibleEnemies(u, 260).length) return (u.intent = { kind: 'attack', target: camp });
         // Иначе помогает линии, где союзникам хуже всего
         const lane = ([0, 1, 2] as LaneId[]).sort((a, b) => this.laneScore(u.side, a) - this.laneScore(u.side, b))[0];
@@ -644,6 +679,12 @@ export class Match {
       }
     }
     return (u.intent = this.laneIntent(u, laneOf(u.slot)));
+  }
+
+  private nextCamp(u: Unit, iq: number): Neutral | undefined {
+    return this.s.neutrals
+      .filter((n) => n.type === 'camp' && n.respawn <= 0 && n.hp > 0 && ((n.homeX < 500) === (u.side === 0) || iq > 0.65))
+      .sort((a, b) => dist(u, a) - dist(u, b))[0];
   }
 
   // Стоит ли команде идти на объект прямо сейчас
@@ -657,7 +698,8 @@ export class Match {
       if (n.type === 'spirit' && s.spirit[side] >= 3) continue;
       const foesNear = theirs.filter((e) => dist(e, n) < 450).length;
       const hpOk = mine.reduce((a, h) => a + h.hp / h.maxHp, 0) / mine.length > 0.55;
-      if ((mine.length > theirs.length && hpOk) || (foesNear === 0 && hpOk && mine.length >= 4)) return n;
+      const more = (this.setup.ver ?? 1) >= 2 ? mine.length - theirs.length >= 2 || (mine.length > theirs.length && foesNear <= 1) : mine.length > theirs.length;
+      if ((more && hpOk) || (foesNear === 0 && hpOk && mine.length >= 4)) return n;
       // Соперник уже бьёт объект — идём мешать, если не слабее
       if (n.target && n.target.side !== side && mine.length >= theirs.length) return n;
     }
@@ -711,7 +753,10 @@ export class Match {
       const o = this.laneObjective(side, l);
       return Math.abs(o.x - CORE_POS[side][0]) + (o.hp / o.maxHp) * 200;
     };
-    return ([1, 0, 2] as LaneId[]).sort((a, b) => score(a) - score(b))[0];
+    // v2: при равенстве не всегда мид — направление меняется раз в минуту
+    const rot = Math.floor(this.s.time / 60 + side) % 3;
+    const bias = (l: LaneId) => ((this.setup.ver ?? 1) >= 2 && l === rot ? -60 : 0);
+    return ([1, 0, 2] as LaneId[]).sort((a, b) => score(a) + bias(a) - score(b) - bias(b))[0];
   }
 
   // Командная игра: собираемся на одной линии и сносим строения по очереди.

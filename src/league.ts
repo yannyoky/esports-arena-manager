@@ -1,6 +1,6 @@
 // Сезон и клуб: календарь лиги, плей-офф, международный турнир, тренировки,
 // развитие игроков, трансферы, персонал, академия, спонсоры, сохранение.
-import { Player, Pos, Team, askSalary, makePlayer, makeTeams, ovr, traitFor, value } from './data';
+import { ABILITY_TEXT, CHAMPIONS, Player, Pos, Team, askSalary, champById, makePlayer, makeTeams, ovr, releasesAt, setPool, traitFor, value } from './data';
 import { ClubEvent, Goal, checkAchievements, makeGoals, rollEvents, settleGoals } from './club';
 import { autoDraftFull } from './draft';
 import { Match, MatchSetup } from './sim';
@@ -52,6 +52,29 @@ export const STAFF_INFO: Record<StaffRole, { name: string; text: string[] }> = {
 export const STAFF_MAX = 3;
 export const staffCost = (lvl: number) => 6000 * lvl; // нанять или повысить до уровня lvl
 export const staffSalary = (lvl: number) => 400 * lvl;
+
+// База клуба: дорогие улучшения с постоянным эффектом и содержанием
+export type Facility = 'gym' | 'rest' | 'studio';
+export const FAC_MAX = 3;
+export const FAC_INFO: Record<Facility, { name: string; text: string }> = {
+  gym: { name: 'Тренировочный зал', text: 'Навыки на тренировках растут на 12% быстрее за уровень' },
+  rest: { name: 'Зона отдыха', text: 'Усталость уходит на 3 быстрее каждую неделю за уровень' },
+  studio: { name: 'Стрим-студия', text: 'Билеты +12% и рост болельщиков после побед за уровень' },
+};
+export const facCost = (lvl: number) => [0, 15000, 35000, 70000][lvl];
+export const facUpkeep = (lvl: number) => 300 * lvl;
+
+export function buildFacility(s: Season, f: Facility): string {
+  const lvl = s.fac[f] + 1;
+  if (lvl > FAC_MAX) return 'Уже максимальный уровень.';
+  const cost = facCost(lvl);
+  if (cost > s.money) return 'Не хватает денег.';
+  s.money -= cost;
+  s.fac[f] = lvl;
+  s.log.unshift(`${FAC_INFO[f].name}: построен уровень ${lvl}.`);
+  save(s);
+  return '';
+}
 
 export interface Sponsor {
   id: string;
@@ -126,10 +149,12 @@ export interface Season {
   finished: boolean; // межсезонье
   meta: Meta;
   unseenPatch: boolean;
+  newHeroes: string[]; // вышли с последним большим патчем, ещё не показаны
   market: Player[]; // свободные агенты
   academy: Player[];
   academyOpen: boolean;
   staff: Record<StaffRole, number>;
+  fac: Record<Facility, number>; // базы клуба: уровни 0–3
   fans: number;
   sponsor: Sponsor | null;
   offers: Sponsor[];
@@ -209,13 +234,14 @@ function makeOffers(s: Season, rng: Rng): Sponsor[] {
     id: kind + s.seasonNo,
     name: pick(kind),
     kind,
-    base: kind === 'fixed' ? Math.round((2500 * k) / 100) * 100 : kind === 'wins' ? Math.round((700 * k) / 100) * 100 : 0,
-    perWin: kind === 'wins' ? Math.round((3000 * k) / 100) * 100 : 0,
-    perFan: kind === 'fans' ? 0.9 : 0,
+    base: kind === 'fixed' ? Math.round((2200 * k) / 100) * 100 : kind === 'wins' ? Math.round((600 * k) / 100) * 100 : 0,
+    perWin: kind === 'wins' ? Math.round((2600 * k) / 100) * 100 : 0,
+    perFan: kind === 'fans' ? 0.8 : 0,
   }));
 }
 
 export function newSeason(seed = Date.now() % 1e9, opts?: NewGame): Season {
+  setPool(1, 1);
   const rng = new Rng(seed);
   const diff = opts?.difficulty ?? 'normal';
   const teams = makeTeams(rng, DIFFICULTY[diff].ai);
@@ -251,10 +277,12 @@ export function newSeason(seed = Date.now() % 1e9, opts?: NewGame): Season {
     finished: false,
     meta: newMeta(seed),
     unseenPatch: true,
+    newHeroes: [],
     market: [],
     academy: [],
     academyOpen: false,
     staff: { analyst: 0, coach: 0, psych: 0 },
+    fac: { gym: 0, rest: 0, studio: 0 },
     fans: 2000,
     sponsor: null,
     offers: [],
@@ -295,7 +323,28 @@ function fillDefaults(s: any): Season {
   const base = newSeason(s.seed ?? 1) as unknown as Record<string, unknown>;
   for (const [k, v] of Object.entries(base)) if (s[k] === undefined) s[k] = v;
   s.focus ??= 'mix';
+  syncPool(s as Season);
   return s as Season;
+}
+
+// Пул героев по сезону и неделе; у новых героев заводим пустую статистику меты
+export function syncPool(s: Season) {
+  setPool(s.seasonNo, s.week);
+  for (const c of CHAMPIONS) s.meta.heroes[c.id] ??= { picks: 0, bans: 0, wins: 0, order: 0 };
+}
+
+// Большой патч: выходят новые герои, они попадают в патчноут и на экран штаба
+function releaseHeroes(s: Season) {
+  syncPool(s);
+  const ids = releasesAt(s.seasonNo, s.week);
+  if (!ids.length) return;
+  for (const id of ids) {
+    const c = champById(id);
+    s.meta.patch.notes.unshift({ kind: 'new', id, text: `Новый герой: ${c.name}`, why: `${c.title}. ${ABILITY_TEXT[c.ab]}` });
+  }
+  s.meta.history[0].notes = s.meta.patch.notes;
+  s.newHeroes = ids;
+  s.log.unshift(`Большой патч ${s.meta.patch.ver}: в игре ${ids.length > 1 ? 'новые герои' : 'новый герой'} ${ids.map((id) => champById(id).name).join(' и ')}!`);
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -455,7 +504,7 @@ function applyTraining(s: Season) {
     }
     const room = Math.max(0.15, Math.min(1.3, (p.potential - ovr(p)) / 12));
     const ageK = p.age < 21 ? 1.3 : p.age < 25 ? 1 : p.age < 28 ? 0.75 : 0.5;
-    const gain = rng.range(0.5, 2.2) * room * ageK * (1 + s.staff.analyst * 0.2) * (mix ? 0.8 : 1) * (p.trait === 'grinder' ? 1.35 : 1);
+    const gain = rng.range(0.5, 2.2) * room * ageK * (1 + s.staff.analyst * 0.2) * (mix ? 0.8 : 1) * (p.trait === 'grinder' ? 1.35 : 1) * (1 + s.fac.gym * 0.12);
     const k = t as 'atk' | 'def' | 'iq';
     p[k] = Math.min(99, Math.round((p[k] + gain) * 10) / 10);
     p.form = Math.max(50, p.form - (mix ? 3 : 6));
@@ -488,7 +537,7 @@ export function matchRecord(m: Match, bans: [string[], string[]], order?: Record
 // Настройка матча: снимок составов, чтобы повтор не зависел от будущих изменений
 export function matchSetup(s: Season, teams: [Team, Team], picks: [string[], string[]], seed: number, extra: Partial<MatchSetup> = {}): MatchSetup {
   return JSON.parse(
-    JSON.stringify({ teams, picks, seed, patch: s.meta.patch, chem: [chemistry(teams[0]), chemistry(teams[1])], ...extra }),
+    JSON.stringify({ teams, picks, seed, patch: s.meta.patch, chem: [chemistry(teams[0]), chemistry(teams[1])], ver: 2, ...extra }),
   );
 }
 
@@ -509,11 +558,11 @@ export function saveReplay(s: Season, label: string, setup: MatchSetup) {
 }
 
 const PRIZE: Record<Stage, [number, number]> = {
-  league: [7000, 3000],
-  semi: [12000, 4000],
-  final: [30000, 10000],
-  'intl-semi': [25000, 8000],
-  'intl-final': [60000, 20000],
+  league: [5000, 1500],
+  semi: [9000, 3000],
+  final: [22000, 7000],
+  'intl-semi': [18000, 6000],
+  'intl-final': [45000, 15000],
 };
 
 const FOREIGN = [
@@ -564,11 +613,12 @@ export function finishWeek(s: Season, humanResult?: { winner: string; kills: [nu
   const academy = s.academyOpen ? Math.round((ACADEMY_WEEKLY + s.academy.reduce((a, p) => a + p.salary, 0)) * half) : 0;
   const sp = s.sponsor;
   const sponsor = !sp ? 0 : sp.kind === 'fixed' ? sp.base : sp.kind === 'wins' ? sp.base + (won ? sp.perWin : 0) : Math.round(s.fans * sp.perFan);
-  const tickets = played ? Math.round(s.fans * 0.6) : 0;
-  s.money += prize + sponsor + tickets - salaries - staff - academy;
+  const tickets = played ? ticketIncome(s) : 0;
+  const facilities = Math.round((Object.values(s.fac) as number[]).reduce((a, l) => a + facUpkeep(l), 0) * half);
+  s.money += prize + sponsor + tickets - salaries - staff - academy - facilities;
 
   // --- Болельщики ---
-  if (played) s.fans = Math.round(won ? s.fans * 1.03 + 60 : s.fans * 0.985);
+  if (played) s.fans = Math.round(won ? s.fans * (1.03 + s.fac.studio * 0.01) + 60 : s.fans * 0.985);
 
   // --- Игроки: усталость, настроение, сыгранность ---
   const psy = s.staff.psych;
@@ -582,7 +632,7 @@ export function finishWeek(s: Season, humanResult?: { winner: string; kills: [nu
   }
   for (const p of me.bench) p.morale = clamp(p.morale - 2 * (1 - psy * 0.25));
   for (const p of roster(me)) {
-    p.fatigue = Math.max(0, p.fatigue - 6 - psy * 2);
+    p.fatigue = Math.max(0, p.fatigue - 6 - psy * 2 - s.fac.rest * 3);
     p.together += 1 + s.staff.coach * 0.3 + (me.players.some((x) => x.trait === 'leader') ? 0.3 : 0);
     // усталость тянет настроение вниз
     if (p.fatigue > 70) p.morale = clamp(p.morale - 3);
@@ -666,10 +716,12 @@ function advance(s: Season, rng: Rng) {
   if ((s.week - 1) % PATCH_EVERY === 0) {
     releasePatch(s.meta, s.week, s.seed + s.seasonNo * 999);
     s.unseenPatch = true;
+    releaseHeroes(s);
     const p = s.meta.patch;
     const buffs = p.notes.filter((n) => n.kind === 'buff').length;
     const nerfs = p.notes.filter((n) => n.kind === 'nerf').length;
-    s.log.unshift(`Вышел патч ${p.ver}: усилено героев ${buffs}, ослаблено ${nerfs}, изменений правил ${p.notes.length - buffs - nerfs}.`);
+    const rules = p.notes.filter((n) => n.kind === 'rule').length;
+    s.log.unshift(`Вышел патч ${p.ver}: усилено героев ${buffs}, ослаблено ${nerfs}, изменений правил ${rules}.`);
   }
 }
 
@@ -751,6 +803,7 @@ export function startNextSeason(s: Season) {
   s.goals = makeGoals(s);
   s.lastGoals = null;
   s.log.unshift(`Начался сезон ${s.seasonNo}. Вышел патч ${s.meta.patch.ver}. Выберите спонсора.`);
+  releaseHeroes(s);
   save(s);
 }
 
@@ -786,7 +839,9 @@ export function owner(s: Season, p: Player): Team | null {
 }
 
 export const transferFee = (p: Player) => Math.round((value(p) * 1.25) / 100) * 100;
-export const signingBonus = (p: Player) => askSalary(p) * 3;
+// Подъёмные резко растут для сильных игроков: звёзды не бывают дешёвыми
+export const signingBonus = (p: Player) => Math.round((askSalary(p) * (3 + Math.max(0, ovr(p) - 60) ** 1.5 / 12)) / 100) * 100;
+export const ticketIncome = (s: Season) => Math.round(s.fans * 0.6 * (1 + s.fac.studio * 0.12));
 export const sellPrice = (p: Player) => Math.round((value(p) * 0.85) / 100) * 100;
 
 // Что просит игрок: зарплата зависит от силы, настроения и успехов клуба
