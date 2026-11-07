@@ -1,6 +1,7 @@
 // Сезон и клуб: календарь лиги, плей-офф, международный турнир, тренировки,
 // развитие игроков, трансферы, персонал, академия, спонсоры, сохранение.
-import { Player, Pos, Team, askSalary, makePlayer, makeTeams, ovr, value } from './data';
+import { Player, Pos, Team, askSalary, makePlayer, makeTeams, ovr, traitFor, value } from './data';
+import { ClubEvent, Goal, checkAchievements, makeGoals, rollEvents, settleGoals } from './club';
 import { autoDraftFull } from './draft';
 import { Match, MatchSetup } from './sim';
 import { Meta, MatchRecord, PATCH_EVERY, newMeta, record, releasePatch } from './meta';
@@ -79,8 +80,40 @@ export interface SeasonRecord {
   titles: string[];
 }
 
+export type Difficulty = 'easy' | 'normal' | 'hard';
+export const DIFFICULTY: Record<Difficulty, { name: string; text: string; money: number; ai: number }> = {
+  easy: { name: 'Лёгкая', text: 'Соперники слабее, больше денег на старте', money: 30000, ai: -5 },
+  normal: { name: 'Обычная', text: 'Как задумано', money: 20000, ai: 0 },
+  hard: { name: 'Тяжёлая', text: 'Соперники сильнее, денег мало', money: 12000, ai: 5 },
+};
+
+export interface Career {
+  wins: number;
+  losses: number;
+  streak: number;
+  best: number;
+}
+
+export interface NewGame {
+  name: string;
+  tag: string;
+  color: string;
+  emblem: number;
+  difficulty: Difficulty;
+  tutorial: boolean;
+}
+
 export interface Season {
-  version: 5;
+  version: 6;
+  difficulty: Difficulty;
+  tutorial: boolean; // подсказки в первом драфте
+  events: ClubEvent[]; // события, ждущие решения
+  goals: Goal[]; // цели владельца на сезон
+  lastGoals: { done: number; total: number } | null;
+  trust: number; // доверие владельца 0–100
+  achievements: string[];
+  newAch: string[]; // ещё не показанные
+  career: Career;
   seed: number;
   seasonNo: number;
   week: number; // 1-based
@@ -112,7 +145,7 @@ export interface Season {
 const SAVE_KEY = 'arena-manager-save';
 const BACKUP_KEY = 'arena-manager-save-backup';
 const LEGACY_KEYS = ['arena-manager-save-v5'];
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 export const LEAGUE_WEEKS = 10;
 export const ROSTER_MAX = 7;
 export const ACADEMY_MAX = 4;
@@ -182,11 +215,30 @@ function makeOffers(s: Season, rng: Rng): Sponsor[] {
   }));
 }
 
-export function newSeason(seed = Date.now() % 1e9): Season {
+export function newSeason(seed = Date.now() % 1e9, opts?: NewGame): Season {
   const rng = new Rng(seed);
-  const teams = makeTeams(rng);
+  const diff = opts?.difficulty ?? 'normal';
+  const teams = makeTeams(rng, DIFFICULTY[diff].ai);
+  if (opts) {
+    const me = teams[0];
+    me.name = opts.name;
+    me.tag = opts.tag;
+    me.color = opts.color;
+    me.emblem = opts.emblem;
+    // теги соперников не должны совпадать с вашим
+    for (const t of teams.slice(1)) if (t.tag === opts.tag) t.tag = t.tag.slice(0, 2) + 'Ъ';
+  }
   const s: Season = {
-    version: 5,
+    version: 6,
+    difficulty: diff,
+    tutorial: opts?.tutorial ?? false,
+    events: [],
+    goals: [],
+    lastGoals: null,
+    trust: 60,
+    achievements: [],
+    newAch: [],
+    career: { wins: 0, losses: 0, streak: 0, best: 0 },
     seed,
     seasonNo: 1,
     week: 1,
@@ -194,7 +246,7 @@ export function newSeason(seed = Date.now() % 1e9): Season {
     focus: 'mix',
     teams,
     fixtures: schedule(teams.map((t) => t.id)),
-    money: 20000,
+    money: DIFFICULTY[diff].money,
     log: ['Добро пожаловать в лигу! Соберите состав и выиграйте сезон.', 'Вышел предсезонный патч 1.0.'],
     finished: false,
     meta: newMeta(seed),
@@ -214,6 +266,7 @@ export function newSeason(seed = Date.now() % 1e9): Season {
   };
   for (let i = 0; i < 10; i++) s.market.push(makeFreeAgent(rng, s, i < 3));
   s.offers = makeOffers(s, rng);
+  s.goals = makeGoals(s);
   return s;
 }
 
@@ -222,7 +275,19 @@ export const totalWeeks = (_s: Season) => LEAGUE_WEEKS + 4;
 // Шаги миграции: MIGRATE[n] переводит сохранение версии n в версию n + 1.
 // Когда формат меняется, увеличьте SAVE_VERSION и добавьте шаг сюда.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const MIGRATE: Record<number, (s: any) => any> = {};
+const MIGRATE: Record<number, (s: any) => any> = {
+  // 5 → 6: характеры игроков, цели, события, достижения, сложность
+  5: (s) => {
+    for (const t of s.teams) for (const p of [...t.players, ...t.bench]) p.trait ??= traitFor(p.id);
+    for (const p of [...s.market, ...s.academy]) p.trait ??= traitFor(p.id);
+    Object.assign(s, {
+      difficulty: 'normal', tutorial: false, events: [], lastGoals: null, trust: 60, achievements: [], newAch: [],
+      career: { wins: 0, losses: 0, streak: 0, best: 0 },
+    });
+    s.goals = makeGoals(s);
+    return s;
+  },
+};
 
 // Недостающие поля берём из нового сезона: так переживают мелкие добавления
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -390,7 +455,7 @@ function applyTraining(s: Season) {
     }
     const room = Math.max(0.15, Math.min(1.3, (p.potential - ovr(p)) / 12));
     const ageK = p.age < 21 ? 1.3 : p.age < 25 ? 1 : p.age < 28 ? 0.75 : 0.5;
-    const gain = rng.range(0.5, 2.2) * room * ageK * (1 + s.staff.analyst * 0.2) * (mix ? 0.8 : 1);
+    const gain = rng.range(0.5, 2.2) * room * ageK * (1 + s.staff.analyst * 0.2) * (mix ? 0.8 : 1) * (p.trait === 'grinder' ? 1.35 : 1);
     const k = t as 'atk' | 'def' | 'iq';
     p[k] = Math.min(99, Math.round((p[k] + gain) * 10) / 10);
     p.form = Math.max(50, p.form - (mix ? 3 : 6));
@@ -464,7 +529,7 @@ const winnerOf = (s: Season, week: number, stage: Stage) =>
   s.fixtures.filter((f) => f.week === week && f.stage === stage).map((f) => f.result!.winner);
 
 // Сыграть остальные матчи недели, подвести финансы и перейти дальше
-export function finishWeek(s: Season, humanResult?: { winner: string; kills: [number, number] }, humanRec?: MatchRecord) {
+export function finishWeek(s: Season, humanResult?: { winner: string; kills: [number, number] }, humanRec?: MatchRecord, bestMulti = 0) {
   const rng = new Rng(s.seed + s.week * 104729 + s.seasonNo * 7);
   const me = humanTeam(s);
   applyTraining(s);
@@ -510,14 +575,15 @@ export function finishWeek(s: Season, humanResult?: { winner: string; kills: [nu
   for (const p of me.players) {
     if (played) {
       p.fatigue = Math.min(100, p.fatigue + 10);
-      p.morale = clamp(p.morale + (won ? 5 : -5 * (1 - psy * 0.25)));
+      const lead = me.players.some((x) => x.trait === 'leader') ? 0.5 : 1;
+      p.morale = clamp(p.morale + (won ? 5 : -5 * (1 - psy * 0.25) * lead));
       p.form = Math.max(50, Math.min(100, p.form + (won ? 4 : -3)));
     }
   }
   for (const p of me.bench) p.morale = clamp(p.morale - 2 * (1 - psy * 0.25));
   for (const p of roster(me)) {
     p.fatigue = Math.max(0, p.fatigue - 6 - psy * 2);
-    p.together += 1 + s.staff.coach * 0.3;
+    p.together += 1 + s.staff.coach * 0.3 + (me.players.some((x) => x.trait === 'leader') ? 0.3 : 0);
     // усталость тянет настроение вниз
     if (p.fatigue > 70) p.morale = clamp(p.morale - 3);
   }
@@ -539,7 +605,11 @@ export function finishWeek(s: Season, humanResult?: { winner: string; kills: [nu
   );
   if (s.money < 0) s.log.unshift('Бюджет ушёл в минус! Продайте игрока или сократите персонал.');
 
+  rollEvents(s, rng, played, won);
+  const mySide = myFx ? (myFx.home === me.id ? 0 : 1) : undefined;
   advance(s, rng);
+  checkAchievements(s, played, won, humanResult?.kills, mySide, bestMulti);
+  if (played) s.tutorial = false;
   save(s);
 }
 
@@ -606,6 +676,7 @@ function advance(s: Season, rng: Rng) {
 // Межсезонье: возраст, рост и спад, контракты, уход ветеранов
 function endSeason(s: Season, rng: Rng) {
   s.finished = true;
+  settleGoals(s);
   const place = standings(s).findIndex((x) => x.team.human) + 1;
   s.history.unshift({ season: s.seasonNo, place, titles: [...s.titles] });
   s.log.unshift(`Сезон ${s.seasonNo} окончен. Место в лиге: ${place}.`);
@@ -677,6 +748,8 @@ export function startNextSeason(s: Season) {
   if (s.academyOpen) for (let i = 0; i < 2 && s.academy.length < ACADEMY_MAX; i++) s.academy.push(makeProspect(rng, s));
   releasePatch(s.meta, 1, s.seed + s.seasonNo * 999);
   s.unseenPatch = true;
+  s.goals = makeGoals(s);
+  s.lastGoals = null;
   s.log.unshift(`Начался сезон ${s.seasonNo}. Вышел патч ${s.meta.patch.ver}. Выберите спонсора.`);
   save(s);
 }

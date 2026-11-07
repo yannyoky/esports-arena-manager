@@ -27,11 +27,26 @@ export const ICON = {
 };
 
 // Герб команды: щит цвета команды с буквой
-export function crest(color: string, tag: string, size = 40) {
+// Рисунки для герба клуба (0 — первая буква тега)
+export const EMBLEMS = [
+  '',
+  'M20 11.5l2.6 5.4 5.9.8-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9-4.3-4.1 5.9-.8z',
+  'M22.5 10 14 21.5h5.5L17.5 31 26 19h-5.5z',
+  'M12 25.5 13.5 14l4 5 2.5-7 2.5 7 4-5 1.5 11.5z',
+  'M20 10c3 4 7 6.5 7 11.5a7 7 0 0 1-14 0c0-2.6 1.2-4.2 2.6-5.6.3 2 1.3 3.2 2.6 3.6-.6-3.6.3-6.7 1.8-9.5z',
+  'M24.5 10.5 27.5 13.5 18.5 22.5l1.5 1.5-1.8 1.8-1.4-1.4-3.3 3.3-1.6-1.6 3.3-3.3-1.4-1.4 1.8-1.8 1.5 1.5z',
+  'M13 13l4.5 3.5L20 11l2.5 5.5L27 13l-1.5 8.5c-1 4.5-3.2 7-5.5 8.5-2.3-1.5-4.5-4-5.5-8.5z',
+  'M20 13c5 0 8.5 4.5 9.5 7-1 2.5-4.5 7-9.5 7s-8.5-4.5-9.5-7c1-2.5 4.5-7 9.5-7zm0 3.2a3.8 3.8 0 1 0 0 7.6 3.8 3.8 0 0 0 0-7.6z',
+];
+
+export function crest(color: string, tag: string, size = 40, emblem = 0) {
+  const mark = EMBLEMS[emblem]
+    ? `<path d="${EMBLEMS[emblem]}" fill="#15121b" fill-rule="evenodd"/>`
+    : `<text x="20" y="25" text-anchor="middle" font-family="Russo One, system-ui, sans-serif" font-size="14" fill="#15121b">${tag[0]}</text>`;
   return `<svg class="crest" width="${size}" height="${size}" viewBox="0 0 40 40" aria-hidden="true">
     <path d="M20 2 5 7v12c0 9 6.5 15.5 15 19 8.5-3.5 15-10 15-19V7z" fill="${color}"/>
     <path d="M20 2 5 7v12c0 9 6.5 15.5 15 19V2z" fill="rgba(0,0,0,.18)"/>
     <path d="M20 5.5 8 9.5v9.5c0 7.2 5 12.6 12 15.6 7-3 12-8.4 12-15.6V9.5z" fill="none" stroke="rgba(255,255,255,.45)" stroke-width="1.2"/>
-    <text x="20" y="25" text-anchor="middle" font-family="Russo One, system-ui, sans-serif" font-size="14" fill="#15121b">${tag[0]}</text>
+    ${mark}
   </svg>`;
 }

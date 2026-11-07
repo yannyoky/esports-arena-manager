@@ -158,6 +158,7 @@ export interface MatchSetup {
   slots?: [Slot[], Slot[]];
   patch?: Patch; // баланс текущего патча: множители героев и награды
   chem?: [number, number]; // сыгранность составов 0–1
+  big?: boolean; // плей-офф или Кубок мира: важен характер игроков
 }
 
 export type FeedItem =
@@ -222,15 +223,19 @@ export class Match {
         const mastery = Math.min(1.05, p.pool[c.role] / 100 + (p.favs?.includes(c.id) ? 0.12 : 0));
         // форма, настроение и усталость
         const formK = (p.form / 100) * (0.92 + (p.morale ?? 70) / 1250) * (1 - (p.fatigue ?? 0) / 500);
-        const chemK = 0.97 + (setup.chem?.[side] ?? 0.5) * 0.06;
+        const leader = setup.teams[side].players.some((x) => x.trait === 'leader');
+        const chemK = 0.97 + (setup.chem?.[side] ?? 0.5) * 0.06 + (leader ? 0.015 : 0);
+        // характер: звезда бьёт сильнее, в больших матчах решают нервы
+        const nerve = setup.big ? (p.trait === 'nervous' ? 0.94 : p.trait === 'calm' ? 1.04 : 1) : 1;
+        const starK = p.trait === 'star' ? 1.05 : 1;
         const [cx, cy] = CORE_POS[side];
         const hx = cx + (side === 0 ? 50 : -50);
         const hy = cy - 80 + i * 40;
         const mod = modOf(setup.patch, c.id);
-        const maxHp = mod.hp * c.hp * (0.8 + p.def / 250) * (0.9 + mastery * 0.15) * onPos;
+        const maxHp = mod.hp * c.hp * (0.8 + p.def / 250) * (0.9 + mastery * 0.15) * onPos * nerve;
         units.push({
           kind: 'hero', side, player: p, champ: c, slot: setup.slots?.[side]?.[i] ?? p.pos, x: hx, y: hy, hp: maxHp, maxHp, shield: 0, flash: 0,
-          dmg: chemK * mod.dmg * c.dmg * (0.75 + p.atk / 200) * (0.85 + mastery * 0.25) * (0.85 + formK * 0.15) * onPos,
+          dmg: nerve * starK * chemK * mod.dmg * c.dmg * (0.75 + p.atk / 200) * (0.85 + mastery * 0.25) * (0.85 + formK * 0.15) * onPos,
           armor: Math.min(0.4, p.def / 300),
           atkT: this.rng.range(0, 0.5), abT: c.abilityCd * mod.cd * this.rng.range(0.3, 0.8), cdK: mod.cd, streak: 0, assists: 0, gold: 0, heroDmg: 0, towerDmg: 0, hitBy: {}, multi: 0, lastKill: -99,
           stun: 0, hidden: 0, dead: 0, kills: 0, deaths: 0, dealt: 0, healed: 0, level: 1, xp: 0,
@@ -576,7 +581,7 @@ export class Match {
       else return (u.intent = { kind: 'home' });
     }
 
-    const aggr = (strat === 'pick' ? 0.95 : 1) * (u.champ.role === 'tank' ? 0.9 : 1);
+    const aggr = (strat === 'pick' ? 0.95 : 1) * (u.champ.role === 'tank' ? 0.9 : 1) * (u.player.trait === 'star' ? 0.88 : 1);
     const deadFoes = s.units.filter((e) => e.side !== u.side && e.dead > 4).length;
     const deadMine = s.units.filter((e) => e.side === u.side && e.dead > 0).length;
     const numbers = deadFoes - deadMine >= 1;

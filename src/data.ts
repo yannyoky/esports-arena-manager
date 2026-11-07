@@ -134,7 +134,25 @@ export interface Player {
   contract: number; // сколько сезонов осталось по контракту (включая текущий)
   together: number; // недель в этой команде: из этого растёт химия
   favs: string[]; // любимые герои: на них игрок сильнее
+  trait?: Trait; // характер
 }
+
+// Характер игрока: влияет на матчи, тренировки и настроение команды
+export type Trait = 'leader' | 'star' | 'grinder' | 'nervous' | 'calm';
+export const TRAITS: Trait[] = ['leader', 'star', 'grinder', 'nervous', 'calm'];
+export const TRAIT_INFO: Record<Trait, { name: string; text: string }> = {
+  leader: { name: 'Лидер', text: 'Команда быстрее сыгрывается и легче переносит поражения' },
+  star: { name: 'Звезда', text: 'Бьёт сильнее и рискует ради убийств, просит зарплату выше' },
+  grinder: { name: 'Трудяга', text: 'Растёт на тренировках заметно быстрее' },
+  nervous: { name: 'Нервный', text: 'Слабее в плей-офф и на Кубке мира' },
+  calm: { name: 'Хладнокровный', text: 'Сильнее в плей-офф и на Кубке мира' },
+};
+// Характер по id: для старых сохранений, без случайных чисел
+export const traitFor = (id: string): Trait => {
+  let h = 0;
+  for (const ch of id) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return TRAITS[h % TRAITS.length];
+};
 
 export const ovr = (p: Player) => (p.atk + p.def + p.iq) / 3;
 
@@ -146,6 +164,7 @@ export interface Team {
   players: Player[]; // стартовая пятёрка, по позициям
   bench: Player[]; // запасные
   human: boolean;
+  emblem?: number; // рисунок на гербе
   foreign?: boolean; // зарубежный клуб, только на международном турнире
 }
 
@@ -178,6 +197,7 @@ export function makePlayer(rng: Rng, level: number, used: Set<string>, pos: Pos 
   const o = ovr(p);
   // молодые растут сильнее, ветераны уже у потолка
   p.potential = Math.min(97, Math.round(o + (age < 21 ? rng.range(12, 30) : age < 24 ? rng.range(5, 16) : rng.range(0, 6))));
+  p.trait = rng.pick(TRAITS);
   p.salary = askSalary(p);
   return p;
 }
@@ -194,7 +214,7 @@ const TEAM_DEFS = [
 // Сколько игрок хочет получать в неделю
 export function askSalary(p: Player) {
   const o = ovr(p);
-  return Math.round((o * 10 * (1 + Math.max(0, o - 55) / 45)) / 10) * 10;
+  return Math.round((o * 10 * (1 + Math.max(0, o - 55) / 45) * (p.trait === 'star' ? 1.15 : 1)) / 10) * 10;
 }
 
 // Рыночная стоимость: сила, возраст и потенциал
@@ -205,7 +225,7 @@ export function value(p: Player) {
   return Math.round((Math.max(5, o - 30) ** 2 * 12 * ageK * potK) / 100) * 100;
 }
 
-export function makeTeams(rng: Rng): Team[] {
+export function makeTeams(rng: Rng, aiBonus = 0): Team[] {
   const used = new Set<string>();
   return TEAM_DEFS.map((d, i) => ({
     id: 't' + i,
@@ -214,7 +234,7 @@ export function makeTeams(rng: Rng): Team[] {
     color: d.color,
     human: i === 0,
     bench: [],
-    players: ([0, 3, 1, 2, 4] as Pos[]).map((pos) => makePlayer(rng, i === 0 ? 52 : 46 + rng.range(0, 16), used, pos)),
+    players: ([0, 3, 1, 2, 4] as Pos[]).map((pos) => makePlayer(rng, i === 0 ? 52 : 46 + aiBonus + rng.range(0, 16), used, pos)),
   }));
 }
 

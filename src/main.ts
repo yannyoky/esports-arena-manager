@@ -3,14 +3,15 @@ import '@fontsource/russo-one/400.css';
 import '@fontsource/golos-text/400.css';
 import '@fontsource/golos-text/600.css';
 import './style.css';
-import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, Champion, POS_NAMES, POS_ROLES, Player, Pos, ROLE_NAMES, Role, SIDE_COLORS, Team, champById, ovr, value } from './data';
+import { ABILITY_TEXT, ALL_ROLES, CHAMPIONS, Champion, POS_NAMES, POS_ROLES, Player, Pos, ROLE_NAMES, Role, SIDE_COLORS, TRAIT_INFO, Team, champById, ovr, value } from './data';
 import { DraftState, ORDER, PHASE_NAME, aiChoice, apply, assign, done, newDraft, taken } from './draft';
 import { BASE_RULES, Note, PATCH_EVERY, RULE_INFO, Rules, fmtRule, heroPower, modOf, priority, tier } from './meta';
-import { ICON, crest } from './icons';
+import { EMBLEMS, ICON, crest } from './icons';
+import { ACHIEVEMENTS, ClubEvent, goalNow, goalText, resolveEvent } from './club';
 import {
   ACADEMY_COST, ACADEMY_WEEKLY, Deal, Fixture, LEAGUE_WEEKS, ROSTER_MAX, STAFF_INFO, STAFF_MAX, STAGE_NAMES, Season, Stage, StaffRole,
   TRAINING_NAMES, TRAINING_TEXT, Training, acceptChance, asking, setFocus, canTalk, chemistry, chooseSponsor, dropProspect, finishWeek, hireStaff,
-  exportSave, hasBackup, loadBackup, parseSave,
+  exportSave, hasBackup, loadBackup, parseSave, DIFFICULTY, Difficulty,
   humanFixture, humanTeam, load, matchRecord, matchSetup, negotiate, newSeason, openAcademy, owner, potentialText, release, roster,
   save, saveReplay, sell, sellPrice, signingBonus, sponsorText, staffCost, staffSalary, standings, startNextSeason, swapStarter,
   teamById, totalWeeks, transferFee, upfront,
@@ -25,7 +26,8 @@ import { LANE_NAMES } from './map';
 import { MATCH_TIME, Match, NEUTRAL_NAMES, STRATEGY_TEXT, Strategy, autoStrategy } from './sim';
 
 const app = document.getElementById('app')!;
-let season: Season = load() ?? newSeason();
+const saved = load();
+let season: Season = saved ?? newSeason();
 let cleanup: (() => void) | null = null;
 let lastDraft: DraftState | null = null; // драфт текущего матча: для статистики меты
 
@@ -117,8 +119,8 @@ function shell(active: string, body: string) {
   const when = season.finished ? 'Межсезонье' : season.week <= LEAGUE_WEEKS ? `Неделя ${season.week}/${LEAGUE_WEEKS}` : season.week <= LEAGUE_WEEKS + 2 ? 'Плей-офф' : 'Кубок мира';
   swap(`<div class="screen">
     <header class="top">
-      <div class="brand">${crest(me.color, me.tag, 30)}<span>${esc(me.name)}</span></div>
-      <div class="meta"><span>С${season.seasonNo} · ${when}</span><span class="money ${season.money < 0 ? 'neg' : ''}">${ICON.coin(16)}${season.money.toLocaleString('ru')}</span><button class="snd" id="snd" aria-label="Звук">${audioSettings().vol > 0 ? ICON.sound(18) : ICON.mute(18)}</button></div>
+      <div class="brand">${crest(me.color, me.tag, 30, me.emblem)}<div class="bn"><span>${esc(me.name)}</span><small>Сезон ${season.seasonNo} · ${when}</small></div></div>
+      <div class="meta"><span class="money ${season.money < 0 ? 'neg' : ''}">${ICON.coin(16)}${season.money.toLocaleString('ru')}</span><button class="snd" id="snd" aria-label="Звук">${audioSettings().vol > 0 ? ICON.sound(18) : ICON.mute(18)}</button></div>
     </header>
     <main>${tipHtml(active)}${body}</main>
     <nav class="tabs">${tabs
@@ -182,7 +184,7 @@ const mood = (p: Player) => (p.morale >= 75 ? 'довольный' : p.morale >=
 function playerRow(p: Player, right = '', cls = '') {
   return `<button class="prow ${cls}" data-p="${p.id}">
     <span class="posl">${POS_NAMES[p.pos]}</span>
-    <div class="pmain"><b>${esc(p.nick)}</b><small>${p.age} лет · сила ${r1(ovr(p))}${p.fatigue > 60 ? ' · <i class="warn">устал</i>' : ''}${p.morale < 40 ? ' · <i class="warn">недоволен</i>' : ''}</small></div>
+    <div class="pmain"><b>${esc(p.nick)}</b><small>${p.age} лет · сила ${r1(ovr(p))}${p.trait ? ` · ${TRAIT_INFO[p.trait].name.toLowerCase()}` : ''}${p.fatigue > 60 ? ' · <i class="warn">устал</i>' : ''}${p.morale < 40 ? ' · <i class="warn">недоволен</i>' : ''}</small></div>
     <div class="favs">${p.favs.map((id) => img(champById(id), 'xs')).join('')}</div>
     ${right}</button>`;
 }
@@ -192,6 +194,7 @@ function playerInfo(p: Player) {
   return `<div class="pcard">
     <div class="row"><b>${esc(p.nick)}</b><span class="pos">${POS_NAMES[p.pos]}</span></div>
     <div class="dim small">${p.age} лет · ${t ? esc(t.name) : season.academy.includes(p) ? 'академия' : 'свободный агент'} · потенциал ${potentialText(season, p)} · стоимость ${value(p).toLocaleString('ru')}</div>
+    ${p.trait ? `<div class="trait"><b>${TRAIT_INFO[p.trait].name}</b><span>${TRAIT_INFO[p.trait].text}</span></div>` : ''}
     ${statBar('Атака', p.atk)}${statBar('Защита', p.def)}${statBar('Тактика', p.iq)}${statBar('Форма', p.form)}${statBar('Настроение', p.morale)}${statBar('Усталость', p.fatigue)}
     <div class="favline"><span class="dim small">Любимые герои</span>${p.favs.map((id) => `${img(champById(id), 'xs')}<small>${champById(id).name}</small>`).join('')}</div>
     <div class="roles">${[...ALL_ROLES].sort((a, b) => p.pool[b] - p.pool[a]).slice(0, 3).map((r) => `<span class="chip">${ROLE_NAMES[r]} ${p.pool[r]}</span>`).join('')}</div>
@@ -284,9 +287,9 @@ function home() {
     top = `<section class="marquee">
       <div class="when">${season.week <= LEAGUE_WEEKS ? `Неделя ${season.week}` : 'Решающий матч'} · ${STAGE_NAMES[fx.stage]}</div>
       <div class="vs">
-        <div class="side">${crest(me.color, me.tag, 64)}<b>${esc(me.tag)}</b><small>${record(me)}</small></div>
+        <div class="side">${crest(me.color, me.tag, 64, me.emblem)}<b>${esc(me.tag)}</b><small>${record(me)}</small></div>
         <span class="v">VS</span>
-        <div class="side">${crest(opp.color, opp.tag, 64)}<b>${esc(opp.tag)}</b><small>${record(opp)}</small></div>
+        <div class="side">${crest(opp.color, opp.tag, 64, opp.emblem)}<b>${esc(opp.tag)}</b><small>${record(opp)}</small></div>
       </div>
       <div class="opp">${esc(opp.name)}${opp.foreign ? ' · зарубежный клуб' : ''}</div>
       <button class="cta" id="play">На драфт</button>
@@ -297,7 +300,11 @@ function home() {
       <button class="cta" id="skipweek">Завершить неделю</button></section>`;
   }
   const focus = `<button class="block patch-card" id="focus"><div class="pc-top">${TRAIN_ICON[season.focus]}<b>Тренировки: ${TRAINING_NAMES[season.focus]}</b><span class="dim small">изменить</span></div></button>`;
-  shell('home', `${top}${sponsorNote}${patchCard()}${focus}${logCard()}`);
+  shell('home', `${eventsHtml()}${top}${sponsorNote}${goalsCard()}${patchCard()}${focus}${logCard()}`);
+  bindEvents();
+  showNewAch();
+  const gl = document.getElementById('goals');
+  if (gl) gl.onclick = () => achSheet();
   document.getElementById('focus')!.onclick = () => rosterScreen();
   const play = document.getElementById('play');
   if (play) play.onclick = () => draft();
@@ -310,6 +317,126 @@ function home() {
   const sp = document.getElementById('sp');
   if (sp) sp.onclick = () => club();
   document.getElementById('patch')!.onclick = () => metaScreen();
+}
+
+// ---------- События клуба, цели и достижения ----------
+
+function eventsHtml() {
+  if (!season.events.length) return '';
+  return season.events
+    .map(
+      (e: ClubEvent) => `<section class="block event ${e.kind}" data-ev="${e.id}">
+      <div class="ev-top">${e.kind === 'press' ? ICON.meta(18) : ICON.star(18)}<b>${e.title}</b></div>
+      <p>${esc(e.text)}</p>
+      <div class="ev-ch">${e.choices.map((c, i) => `<button class="ev-b" data-i="${i}"><b>${esc(c.label)}</b><small>${esc(c.hint)}</small></button>`).join('')}</div>
+    </section>`,
+    )
+    .join('');
+}
+
+function bindEvents() {
+  app.querySelectorAll<HTMLElement>('[data-ev]').forEach((el) =>
+    el.querySelectorAll<HTMLButtonElement>('[data-i]').forEach(
+      (b) =>
+        (b.onclick = () => {
+          const txt = resolveEvent(season, el.dataset.ev!, +b.dataset.i!);
+          save(season);
+          if (txt) toast(txt);
+          home();
+        }),
+    ),
+  );
+}
+
+function goalsCard() {
+  const g = season.goals;
+  if (!g.length) return '';
+  return `<button class="block goals" id="goals"><div class="pc-top">${ICON.table(18)}<b>Цели владельца</b><span class="dim small">достижения ${season.achievements.length}/${ACHIEVEMENTS.length}</span></div>
+    ${g.map((x) => {
+      const st = goalNow(season, x);
+      return `<div class="goal ${st.ok ? 'ok' : ''}"><i>${st.ok ? '✓' : '○'}</i><span>${goalText(x)}<small>${st.now} · премия ${x.reward.toLocaleString('ru')}</small></span></div>`;
+    }).join('')}
+    <div class="trust"><span class="dim small">Доверие владельца</span><i style="--k:${season.trust / 100}"></i></div></button>`;
+}
+
+function achSheet() {
+  const s = sheet(`<h2>Достижения</h2><div class="achs">${ACHIEVEMENTS.map((a) => {
+    const got = season.achievements.includes(a.id);
+    return `<div class="ach ${got ? 'got' : ''}"><i>${got ? ICON.star(18) : '?'}</i><div><b>${a.name}</b><small>${a.text}</small></div></div>`;
+  }).join('')}</div><button class="cta wide" id="ok">Закрыть</button>`);
+  s.el.querySelector<HTMLButtonElement>('#ok')!.onclick = s.close;
+}
+
+function showNewAch() {
+  if (!season.newAch.length) return;
+  const ids = season.newAch;
+  season.newAch = [];
+  save(season);
+  ids.forEach((id, i) => {
+    const a = ACHIEVEMENTS.find((x) => x.id === id);
+    if (a) setTimeout(() => {
+      toast(`Достижение: «${a.name}»`);
+      sfx('level');
+    }, 400 + i * 2800);
+  });
+}
+
+// ---------- Новая игра: свой клуб ----------
+
+const CLUB_COLORS = ['#4f9dff', '#ff5d5d', '#3fd99a', '#ffb84d', '#b07bff', '#ff7ac8', '#5fe0e6', '#e8e4da'];
+
+function newGame(canCancel: boolean) {
+  const st = { name: 'Мой клуб', tag: 'МКЛ', color: CLUB_COLORS[0], emblem: 1, difficulty: 'normal' as Difficulty, tutorial: !canCancel, tagTouched: false };
+  const autoTag = (n: string) => {
+    const w = n.trim().split(/\s+/).filter(Boolean);
+    const t = w.length >= 3 ? w.map((x) => x[0]).join('') : w.length === 2 ? w[0].slice(0, 2) + w[1][0] : (w[0] ?? 'КЛБ').slice(0, 3);
+    return t.toUpperCase().slice(0, 3);
+  };
+  const draw = () => {
+    swap(`<div class="screen newgame"><main>
+      <h1>Новый клуб</h1>
+      <div class="ng-preview">${crest(st.color, st.tag || '?', 72, st.emblem)}<div><b>${esc(st.name || 'Без названия')}</b><span>${esc(st.tag)}</span></div></div>
+      <label class="fld"><span>Название</span><input id="nm" maxlength="22" value="${esc(st.name)}" autocomplete="off"></label>
+      <label class="fld"><span>Тег, 3 буквы</span><input id="tg" maxlength="3" value="${esc(st.tag)}" autocomplete="off"></label>
+      <div class="fld"><span>Цвет</span><div class="swatches">${CLUB_COLORS.map((c) => `<button class="sw ${c === st.color ? 'on' : ''}" data-col="${c}" style="--c:${c}" aria-label="Цвет"></button>`).join('')}</div></div>
+      <div class="fld"><span>Эмблема</span><div class="emblems">${EMBLEMS.map((_, i) => `<button class="em ${i === st.emblem ? 'on' : ''}" data-em="${i}" aria-label="Эмблема ${i + 1}">${crest(st.color, st.tag || '?', 40, i)}</button>`).join('')}</div></div>
+      <div class="fld"><span>Сложность</span><div class="diffs">${(Object.keys(DIFFICULTY) as Difficulty[]).map((d) => `<button class="diff ${d === st.difficulty ? 'on' : ''}" data-d="${d}"><b>${DIFFICULTY[d].name}</b><small>${DIFFICULTY[d].text}</small></button>`).join('')}</div></div>
+      <label class="tog"><input type="checkbox" id="tut" ${st.tutorial ? 'checked' : ''}><span>Обучение в первом матче: подсказки в драфте и больше времени на ход</span></label>
+      <button class="cta wide" id="start">Основать клуб</button>
+      ${canCancel ? '<button class="chip wide" id="cancel">Отмена</button>' : ''}
+    </main></div>`);
+    const nm = document.getElementById('nm') as HTMLInputElement;
+    const tg = document.getElementById('tg') as HTMLInputElement;
+    const preview = () => {
+      app.querySelector('.ng-preview')!.innerHTML = `${crest(st.color, st.tag || '?', 72, st.emblem)}<div><b>${esc(st.name || 'Без названия')}</b><span>${esc(st.tag)}</span></div>`;
+    };
+    nm.oninput = () => {
+      st.name = nm.value;
+      if (!st.tagTouched) tg.value = st.tag = autoTag(nm.value);
+      preview();
+    };
+    tg.oninput = () => {
+      st.tagTouched = true;
+      st.tag = tg.value.toUpperCase();
+      preview();
+    };
+    on('[data-col]', (b) => ((st.color = b.dataset.col!), draw()));
+    on('[data-em]', (b) => ((st.emblem = +b.dataset.em!), draw()));
+    on('[data-d]', (b) => ((st.difficulty = b.dataset.d as Difficulty), draw()));
+    (document.getElementById('tut') as HTMLInputElement).onchange = (e) => (st.tutorial = (e.target as HTMLInputElement).checked);
+    document.getElementById('start')!.onclick = () => {
+      const name = st.name.trim();
+      const tag = st.tag.trim();
+      if (name.length < 2) return toast('Название слишком короткое');
+      if (tag.length < 2) return toast('Тег: 2–3 буквы');
+      season = newSeason(Date.now() % 1e9, { name, tag, color: st.color, emblem: st.emblem, difficulty: st.difficulty, tutorial: st.tutorial });
+      save(season);
+      home();
+    };
+    const c = document.getElementById('cancel');
+    if (c) c.onclick = () => club();
+  };
+  draw();
 }
 
 // Через сколько недель следующий патч (null — в этом сезоне больше не будет)
@@ -470,8 +597,10 @@ function club() {
       <p class="dim small">Игра сохраняется сама после каждого действия. Файл сохранения можно перенести на другое устройство или оставить на всякий случай.</p>
       <div class="acts-row"><button class="chip on" id="exp">${ICON.save(16)}Сохранить в файл</button><button class="chip" id="imp">Загрузить из файла</button></div>
       ${hasBackup() ? '<button class="chip" id="bak">Вернуть начало прошлой недели</button>' : ''}
+      <button class="chip" id="newg">Начать новую игру</button>
       <input type="file" id="impf" accept=".json,application/json" hidden>
     </section>
+    <section class="block"><h3>Достижения · ${season.achievements.length} из ${ACHIEVEMENTS.length}</h3><button class="chip" id="achs">Посмотреть все</button></section>
     <section class="block"><h3>История клуба</h3>${season.history.length
       ? season.history.map((h) => `<div class="row"><span>Сезон ${h.season}</span><span>${h.place}-е место${h.titles.length ? ' · ' + h.titles.length + ' ' + ICON.star(14) : ''}</span></div>`).join('')
       : '<p class="dim small">Первый сезон клуба ещё идёт.</p>'}</section>`);
@@ -493,6 +622,14 @@ function club() {
     };
   on('[data-p]', (el) => prospectSheet(findPlayer(el.dataset.p!)));
   saveControls();
+  document.getElementById('achs')!.onclick = achSheet;
+  document.getElementById('newg')!.onclick = () => {
+    const c = sheet(`<h2>Начать заново?</h2><p class="dim">Текущий клуб будет удалён. Если хотите вернуться к нему позже, сначала сохраните его в файл.</p><button class="cta wide" id="yes">Создать новый клуб</button>`);
+    c.el.querySelector<HTMLButtonElement>('#yes')!.onclick = () => {
+      c.close();
+      newGame(true);
+    };
+  };
   on('[data-r]', (el) => {
     const r = season.replays.find((x) => x.id === el.dataset.r)!;
     playMatch(new Match(JSON.parse(JSON.stringify(r.setup))), 'replay');
@@ -579,7 +716,7 @@ function prospectSheet(p: Player) {
 function table() {
   const rows = standings(season)
     .map(
-      (s, i) => `<tr class="${s.team.human ? 'me' : ''}"><td>${i + 1}</td><td class="tm">${crest(s.team.color, s.team.tag, 22)}${esc(s.team.name)}</td>
+      (s, i) => `<tr class="${s.team.human ? 'me' : ''}"><td>${i + 1}</td><td class="tm">${crest(s.team.color, s.team.tag, 22, s.team.emblem)}${esc(s.team.name)}</td>
       <td>${s.wins}</td><td>${s.losses}</td><td>${s.kd > 0 ? '+' : ''}${s.kd}</td></tr>`,
     )
     .join('');
@@ -587,7 +724,7 @@ function table() {
     const a = teamById(season, f.home);
     const b = teamById(season, f.away);
     const w = f.result?.winner;
-    const side = (t: Team) => `<div class="bt ${w === t.id ? 'win' : w ? 'lose' : ''} ${t.human ? 'me' : ''}">${crest(t.color, t.tag, 18)}<span>${esc(t.name)}</span></div>`;
+    const side = (t: Team) => `<div class="bt ${w === t.id ? 'win' : w ? 'lose' : ''} ${t.human ? 'me' : ''}">${crest(t.color, t.tag, 18, t.emblem)}<span>${esc(t.name)}</span></div>`;
     return `<div class="tie">${side(a)}${side(b)}</div>`;
   };
   const stage = (st: Stage, name: string) => {
@@ -678,7 +815,7 @@ function draft() {
   let filter: Role | 'all' = 'all';
   let timer = 0;
   let aiHover: string | null = null;
-  const HUMAN_TIME = 30;
+  const HUMAN_TIME = season.tutorial ? 90 : 30;
   let left = HUMAN_TIME;
 
   const bestFor = (c: Champion) => Math.max(...me.players.map((p) => p.pool[c.role]));
@@ -757,7 +894,13 @@ function draft() {
           selC && myTurn
             ? `<div class="info">${img(selC)}<div><b>${selC.name}</b><small>${ROLE_NAMES[selC.role]} · владение ${bestFor(selC)} · тир ${tier(meta, selC.id)}${favOf(selC) ? ` · ♥ ${esc(favOf(selC)!.nick)}` : ''}</small><small>${noteOf(selC) ? `<span class="${noteOf(selC)!.kind === 'buff' ? 'up' : 'down'}">Патч ${meta.patch.ver}: ${noteOf(selC)!.text.split(': ')[1]}</span>` : ABILITY_TEXT[selC.ab]}</small></div></div>
                <button class="cta ${st.act}" id="lock">${st.act === 'ban' ? 'Забанить' : 'Выбрать'}</button>`
-            : `<div class="hint">${myTurn ? (st.act === 'ban' ? 'Выберите героя, которого уберёте у соперника' : 'Выберите героя для своей команды') : st ? `${esc(teams[st.side].name)} думают…` : ''}</div>`
+            : `<div class="hint">${myTurn
+                ? season.tutorial
+                  ? st.act === 'ban'
+                    ? '<b>Обучение.</b> Бан убирает героя для обеих команд. Уберите сильного героя меты (значок S) или любимого героя соперника. Совет тренера подсвечен.'
+                    : '<b>Обучение.</b> Героя получит следующий по очереди игрок. Верху подходят стражи и бойцы, центру маги и ассасины, стрелку стрелки, поддержке поддержка. ♥ значит любимый герой: на нём игрок сильнее.'
+                  : st.act === 'ban' ? 'Выберите героя, которого уберёте у соперника' : 'Выберите героя для своей команды'
+                : st ? `${esc(teams[st.side].name)} думают…` : ''}</div>`
         }</div>
       </div></div>`, !first);
     if (first) cleanup = clearAll;
@@ -789,7 +932,7 @@ function draft() {
     const st = ORDER[d.step];
     if (st.side === mySide) {
       left = HUMAN_TIME;
-      tip = season.staff.coach > 0 ? aiChoice(d, me, opp, new Rng(season.seed + d.step * 61 + season.week), meta) : null;
+      tip = season.staff.coach > 0 || season.tutorial ? aiChoice(d, me, opp, new Rng(season.seed + d.step * 61 + season.week), meta) : null;
       render();
       timer = window.setInterval(() => {
         left -= 0.25;
@@ -855,7 +998,7 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
     document.getElementById('go')!.onclick = () => {
       const p: [string[], string[]] = mySide === 0 ? [mine, theirs] : [theirs, mine];
       const st: [Strategy, Strategy] = mySide === 0 ? [strat, foeStrat] : [foeStrat, strat];
-      playMatch(new Match(matchSetup(season, teams, p, season.seed + season.week * 977 + season.seasonNo * 13, { strategies: st })), 'live');
+      playMatch(new Match(matchSetup(season, teams, p, season.seed + season.week * 977 + season.seasonNo * 13, { strategies: st, big: humanFixture(season)!.stage !== 'league' })), 'live');
     };
   };
   render();
@@ -876,9 +1019,9 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
   const [a, b] = m.setup.teams;
   swap(`<div class="screen match">
     <div class="bug">
-      <div class="t">${crest(SIDE_COLORS[0], a.tag, 26)}<b>${esc(a.tag)}</b></div>
+      <div class="t">${crest(SIDE_COLORS[0], a.tag, 26, a.emblem)}<b>${esc(a.tag)}</b></div>
       <div class="sc"><b id="k0">0</b><span id="clock">5:00</span><b id="k1">0</b></div>
-      <div class="t r"><b>${esc(b.tag)}</b>${crest(SIDE_COLORS[1], b.tag, 26)}</div>
+      <div class="t r"><b>${esc(b.tag)}</b>${crest(SIDE_COLORS[1], b.tag, 26, b.emblem)}</div>
     </div>
     <div class="objs"><span id="o0"></span><span id="o1"></span></div>
     <div class="field"><canvas id="cv"></canvas><ul class="feed" id="feed"></ul>
@@ -1090,6 +1233,56 @@ function statsHtml(m: Match) {
     <tbody>${rows(0)}<tr class="gap"><td colspan="6"></td></tr>${rows(1)}</tbody></table></div>`;
 }
 
+// Разбор тренера: ключевые моменты матча и советы на следующий драфт
+function reviewHtml(m: Match, my: 0 | 1) {
+  const s = m.s;
+  const foe = (1 - my) as 0 | 1;
+  const tm = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  const tag = (sd: number) => esc(m.setup.teams[sd].tag);
+  const moments: [number, string][] = [];
+  for (const e of s.events) {
+    if (e.kind === 'first') moments.push([e.t, `Первая кровь за ${tag(1 - e.victim.side)}: ${esc(e.victim.player.nick)} пал${e.killer ? ` от ${esc(e.killer.player.nick)}` : ''}`]);
+    else if (e.kind === 'kill' && e.multi >= 3 && e.killer) moments.push([e.t, `${esc(e.killer.player.nick)} делает ${e.multi === 3 ? 'тройное' : e.multi === 4 ? 'четверное' : 'пятерное'} убийство`]);
+    else if (e.kind === 'ace') moments.push([e.t, `Вся команда ${tag(e.side)} уничтожена`]);
+    else if (e.kind === 'tower' && e.tier === 1) moments.push([e.t, `${tag(1 - e.side)} вскрывают базу: пала внутренняя башня`]);
+    else if (e.kind === 'objective' && e.type === 'colossus') moments.push([e.t, `${tag(e.side)} забирают Колосса`]);
+  }
+  // самый резкий поворот по золоту за 30 секунд
+  const g = s.goldLine;
+  let best = 0;
+  let at = 0;
+  for (let i = 3; i < g.length; i++) {
+    const d = (g[i] - g[i - 3]) * (my === 0 ? 1 : -1);
+    if (Math.abs(d) > Math.abs(best)) {
+      best = d;
+      at = i;
+    }
+  }
+  if (Math.abs(best) > 1200) moments.push([at * 10, `${best > 0 ? 'Вы' : 'Соперник'} выиграли отрезок игры: +${(Math.abs(best) / 1000).toFixed(1)}к золота за полминуты`]);
+  moments.sort((a, b) => a[0] - b[0]);
+  const top = moments.slice(0, 4);
+
+  const score = (u: (typeof s.units)[0]) => u.kills * 2 + u.assists - u.deaths * 1.5;
+  const enemies = s.units.filter((u) => u.side === foe).sort((a, b) => score(b) - score(a));
+  const mine = s.units.filter((u) => u.side === my).sort((a, b) => score(a) - score(b));
+  const tips: string[] = [];
+  const threat = enemies[0];
+  if (threat && score(threat) >= 6) tips.push(`Опаснее всех был ${esc(threat.player.nick)} на ${threat.champ.name} (${threat.kills}/${threat.deaths}/${threat.assists}). В следующий раз подумайте о бане.`);
+  const weak = mine[0];
+  if (weak && score(weak) < 0) {
+    const off = !POS_ROLES[weak.player.pos].includes(weak.champ.role);
+    const low = weak.player.pool[weak.champ.role] < 60;
+    tips.push(`Слабее всех сыграл ${esc(weak.player.nick)} на ${weak.champ.name}${off ? ': этот герой не для его позиции' : low ? ': он плохо владеет этой ролью' : ''}.`);
+  }
+  if (s.objectives[foe] >= s.objectives[my] + 2) tips.push('Соперник чаще забирал речного духа и колосса. Командный напор поможет держать объекты.');
+  const tired = m.setup.teams[my].players.filter((p) => p.fatigue > 60).length;
+  if (tired >= 2) tips.push('Игроки устали. Неделя отдыха в плане тренировок вернёт форму.');
+  if (!tips.length) tips.push(s.winner === my ? 'Хорошая игра, менять ничего не нужно.' : 'Близкий матч. Попробуйте другую стратегию на расстановке.');
+  return `<section class="review"><h3>Разбор тренера</h3>
+    ${top.length ? `<ul class="moments">${top.map(([t, x]) => `<li><time>${tm(t)}</time><span>${x}</span></li>`).join('')}</ul>` : ''}
+    <ul class="tips">${tips.map((t) => `<li>${t}</li>`).join('')}</ul></section>`;
+}
+
 function result(m: Match) {
   const me = humanTeam(season);
   const s = m.s;
@@ -1102,6 +1295,7 @@ function result(m: Match) {
   overlay.className = 'overlay';
   overlay.innerHTML = `<div class="sheet">
     <h2 class="${won ? 'win' : 'lose'}">${won ? 'Победа' : 'Поражение'}</h2>
+    ${reviewHtml(m, m.setup.teams[0].id === me.id ? 0 : 1)}
     ${statsHtml(m)}
     <button class="cta wide" id="cont">Дальше</button></div>`;
   app.appendChild(overlay);
@@ -1109,7 +1303,9 @@ function result(m: Match) {
     const order = lastDraft?.order;
     const bans: [string[], string[]] = lastDraft ? lastDraft.bans : [[], []];
     saveReplay(season, `С${season.seasonNo}, ${STAGE_NAMES[fx.stage]}: ${won ? 'победа' : 'поражение'} против ${opp.tag} ${s.kills[0]}:${s.kills[1]}`, m.setup);
-    finishWeek(season, { winner: winner.id, kills: [s.kills[0], s.kills[1]] }, matchRecord(m, bans, order));
+    const mine = m.setup.teams[0].id === me.id ? 0 : 1;
+    const bestMulti = s.events.reduce((a, e) => (e.kind === 'kill' && e.killer?.side === mine ? Math.max(a, e.multi) : a), 0);
+    finishWeek(season, { winner: winner.id, kills: [s.kills[0], s.kills[1]] }, matchRecord(m, bans, order), bestMulti);
     lastDraft = null;
     home();
   };
@@ -1120,4 +1316,5 @@ document.addEventListener('visibilitychange', () => {
 });
 window.addEventListener('pagehide', () => save(season));
 
-home();
+if (saved) home();
+else newGame(false);
