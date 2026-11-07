@@ -1,6 +1,7 @@
 // Модели героев, нарисованные векторно на Canvas. Одна функция рисует героя
 // и на поле боя, и на портретах в драфте.
 import { Champion, Look } from './data';
+import { ART, drawArt } from './art';
 
 export interface Pose {
   t: number; // время, для дыхания и шага
@@ -463,6 +464,8 @@ function limb(ctx: CanvasRenderingContext2D, pts: [number, number][], w: number,
 
 // Герой стоит «ногами» в точке (0,0), рост около 52 единиц
 export function drawHero(ctx: CanvasRenderingContext2D, c: Champion, p: Pose) {
+  const art = ART[c.id];
+  if (art) return drawArt(ctx, art, p);
   const L = c.look;
   const face = p.face ?? 1;
   const ph = p.t * 11;
@@ -704,8 +707,13 @@ export function portrait(c: Champion, size = 96): string {
   const cv = document.createElement('canvas');
   cv.width = cv.height = size;
   const ctx = cv.getContext('2d')!;
-  ctx.translate(size * 0.5, size * 1.06);
-  ctx.scale(size / 50, size / 50);
+  if (ART[c.id]) {
+    ctx.translate(size * 0.44, size * 1.58);
+    ctx.scale(size / 43, size / 43);
+  } else {
+    ctx.translate(size * 0.5, size * 1.06);
+    ctx.scale(size / 50, size / 50);
+  }
   drawHero(ctx, c, { t: 0.6 });
   const url = cv.toDataURL();
   cache.set(key, url);
