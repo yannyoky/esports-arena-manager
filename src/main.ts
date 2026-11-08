@@ -18,7 +18,7 @@ import {
   exportSave, hasBackup, loadBackup, parseSave, DIFFICULTY, Difficulty,
   humanFixture, humanTeam, load, matchRecord, matchSetup, negotiate, newSeason, openAcademy, owner, potentialText, release, roster,
   save, saveReplay, sell, sellPrice, signingBonus, sponsorText, staffCost, staffSalary, standings, startNextSeason, swapStarter,
-  teamById, totalWeeks, transferFee, upfront,
+  teamById, totalWeeks, transferFee, upfront, humanSeries, addSeriesGame, BEST_OF, winsNeeded,
 } from './league';
 import { portrait } from './models';
 import { CASTERS, Caster, Line } from './commentary';
@@ -340,15 +340,18 @@ function home() {
   let top: string;
   if (fx) {
     const opp = teamById(season, fx.home === me.id ? fx.away : fx.home);
+    const ser = humanSeries(season)!;
+    const [my, their] = fx.home === me.id ? ser.score : [ser.score[1], ser.score[0]];
     top = `<section class="marquee">
-      <div class="when">${season.week <= LEAGUE_WEEKS ? `Неделя ${season.week}` : 'Решающий матч'} · ${STAGE_NAMES[fx.stage]}</div>
+      <div class="when">${season.week <= LEAGUE_WEEKS ? `Неделя ${season.week}` : 'Решающий матч'} · ${STAGE_NAMES[fx.stage]}${ser.bestOf > 1 ? ` · bo${ser.bestOf}` : ''}</div>
       <div class="vs">
         <div class="side">${crest(me.color, me.tag, 64, me.emblem)}<b>${esc(me.tag)}</b><small>${record(me)}</small></div>
-        <span class="v">VS</span>
+        ${ser.games.length ? `<span class="v ser">${my}:${their}</span>` : '<span class="v">VS</span>'}
         <div class="side">${crest(opp.color, opp.tag, 64, opp.emblem)}<b>${esc(opp.tag)}</b><small>${record(opp)}</small></div>
       </div>
       <div class="opp">${esc(opp.name)}${opp.foreign ? ' · зарубежный клуб' : ''}</div>
-      <button class="cta" id="play">На драфт</button>
+      ${ser.bestOf > 1 ? `<div class="dim small">Серия до ${ser.need} побед${ser.games.length ? ` · дальше игра ${ser.next}` : ''}</div>` : ''}
+      <button class="cta" id="play">${ser.games.length ? `Игра ${ser.next}: драфт` : 'На драфт'}</button>
     </section>`;
   } else {
     top = `<section class="marquee"><div class="when">${season.week <= LEAGUE_WEEKS + 2 ? 'Плей-офф' : 'Кубок мира'}</div>
@@ -386,10 +389,7 @@ function home() {
   if (play) play.onclick = () => draft();
   const sk = document.getElementById('skipweek');
   if (sk)
-    sk.onclick = () => {
-      finishWeek(season);
-      home();
-    };
+    sk.onclick = () => weekDone(() => finishWeek(season));
   const sp = document.getElementById('sp');
   if (sp) sp.onclick = () => club();
   document.getElementById('patch')!.onclick = () => {
@@ -841,7 +841,7 @@ function prospectSheet(p: Player) {
 
 // ---------- Таблица и сетка ----------
 
-let tableTab: 'table' | 'cal' = 'table';
+let tableTab: 'table' | 'bracket' | 'cal' = 'table';
 
 // Календарь сезона: все недели, соперники, результаты, патчи и плей-офф
 function calendarHtml() {
@@ -867,7 +867,8 @@ function calendarHtml() {
       main = `${crest(opp.color, opp.tag, 26, opp.emblem)}<div><b>${esc(opp.name)}</b><small>${STAGE_SHORT[st]} · ${mine.home === me.id ? 'дома' : 'в гостях'}</small></div>`;
       if (mine.result) {
         const won = mine.result.winner === me.id;
-        const k = mine.home === me.id ? mine.result.kills : ([mine.result.kills[1], mine.result.kills[0]] as const);
+        const raw = mine.result.games ?? mine.result.kills;
+        const k = mine.home === me.id ? raw : ([raw[1], raw[0]] as const);
         res = `<span class="cres ${won ? 'w' : 'l'}"><b>${won ? 'Победа' : 'Пораж.'}</b>${k[0]}:${k[1]}</span>`;
         state = won ? 'won' : 'lost';
       } else if (now) res = `<span class="cres next">Сейчас</span>`;
@@ -883,7 +884,7 @@ function calendarHtml() {
         const a = teamById(season, f.home);
         const b = teamById(season, f.away);
         const r = f.result;
-        return `<li><span class="${r?.winner === a.id ? 'w' : ''}">${esc(a.tag)}</span><em>${r ? `${r.kills[0]}:${r.kills[1]}` : '–'}</em><span class="${r?.winner === b.id ? 'w' : ''}">${esc(b.tag)}</span></li>`;
+        return `<li><span class="${r?.winner === a.id ? 'w' : ''}">${esc(a.tag)}</span><em>${r ? (r.games ?? r.kills).join(':') : '–'}</em><span class="${r?.winner === b.id ? 'w' : ''}">${esc(b.tag)}</span></li>`;
       })
       .join('');
     const head = w === 1 || stageOfWeek(w - 1) !== st && (st === 'semi' || st === 'intl-semi') ? `<li class="csec">${st === 'league' ? 'Регулярный сезон' : st === 'semi' ? 'Плей-офф' : 'Кубок мира'}</li>` : '';
@@ -900,8 +901,14 @@ function calendarHtml() {
 function table() {
   const seg = segTabs('tt', tableTab, [
     ['table', 'Таблица'],
+    ['bracket', 'Сетка'],
     ['cal', 'Календарь'],
   ]);
+  if (tableTab === 'bracket') {
+    shell('table', seg + bracketHtml());
+    bindTableTabs();
+    return;
+  }
   if (tableTab === 'cal') {
     shell('table', seg + calendarHtml());
     bindTableTabs();
@@ -914,29 +921,45 @@ function table() {
       <td>${s.wins}</td><td>${s.losses}</td><td>${s.kd > 0 ? '+' : ''}${s.kd}</td></tr>`,
     )
     .join('');
-  const tie = (f: Fixture) => {
-    const a = teamById(season, f.home);
-    const b = teamById(season, f.away);
-    const w = f.result?.winner;
-    const side = (t: Team) => `<div class="bt ${w === t.id ? 'win' : w ? 'lose' : ''} ${t.human ? 'me' : ''}">${crest(t.color, t.tag, 18, t.emblem)}<span>${esc(t.name)}</span></div>`;
-    return `<div class="tie">${side(a)}${side(b)}</div>`;
-  };
-  const stage = (st: Stage, name: string) => {
-    const fs = season.fixtures.filter((f) => f.stage === st);
-    return fs.length ? `<div class="round"><small>${name}</small>${fs.map(tie).join('')}</div>` : '';
-  };
-  const po = stage('semi', 'Полуфиналы') + stage('final', 'Финал');
-  const intl = stage('intl-semi', 'Полуфиналы') + stage('intl-final', 'Финал');
   shell('table', seg + `<section class="block"><h3>Лига · сезон ${season.seasonNo}</h3><table class="tbl"><thead><tr><th>#</th><th>Команда</th><th>П</th><th>Пр</th><th>±</th></tr></thead><tbody>${rows}</tbody></table>
-    <p class="dim small">После ${LEAGUE_WEEKS} недель четыре лучших выходят в плей-офф. Чемпион едет на Кубок мира против зарубежных клубов.</p></section>
-    ${po ? `<section class="block"><h3>Плей-офф</h3><div class="bracket">${po}</div></section>` : ''}
-    ${intl ? `<section class="block"><h3>Кубок мира</h3><div class="bracket">${intl}</div></section>` : ''}`);
+    <p class="dim small">После ${LEAGUE_WEEKS} недель четыре лучших выходят в плей-офф. Чемпион едет на Кубок мира против зарубежных клубов.</p></section>`);
   bindTableTabs();
+}
+
+// Турнирная сетка: плей-офф лиги и Кубок мира, счёт серий, ещё не известные места подписаны
+function bracketHtml() {
+  const tbl = standings(season);
+  const slot = (id: string | null, label: string, fx: Fixture | undefined, home: boolean) => {
+    const t = id ? teamById(season, id) : null;
+    const r = fx?.result;
+    const sc = r ? (r.games ? r.games[home ? 0 : 1] : r.winner === id ? 1 : 0) : '';
+    const st = r ? (r.winner === id ? 'bwin' : 'blose') : '';
+    if (!t) return `<div class="bs tbd"><span class="bc"></span><span class="bn">${label}</span><b></b></div>`;
+    return `<div class="bs ${st} ${t.human ? 'me' : ''}">${crest(t.color, t.tag, 20, t.emblem)}<span class="bn">${esc(t.name)}${fx ? '' : `<small>${label}</small>`}</span><b>${sc}</b></div>`;
+  };
+  const tie = (fx: Fixture | undefined, a: [string | null, string], b: [string | null, string], st: Stage) =>
+    `<div class="bx"><small class="bo">bo${BEST_OF[st]}</small>${slot(fx?.home ?? a[0], a[1], fx, true)}${slot(fx?.away ?? b[0], b[1], fx, false)}</div>`;
+  const find = (st: Stage) => season.fixtures.filter((f) => f.stage === st);
+  const champOf = (st: Stage) => find(st)[0]?.result?.winner;
+  const block = (title: string, semis: [Fixture | undefined, [string | null, string], [string | null, string]][], finSt: Stage, semiSt: Stage) => {
+    const fin = find(finSt)[0];
+    const w = champOf(finSt);
+    return `<section class="block"><h3>${title}</h3><div class="bk">
+      <div class="bcol"><small>Полуфиналы</small>${semis.map(([f, a, b]) => tie(f, a, b, semiSt)).join('')}</div>
+      <div class="bcol fin"><small>Финал</small>${tie(fin, [null, 'Победитель 1'], [null, 'Победитель 2'], finSt)}
+        ${w ? `<div class="bchamp">${ICON.star(14)}<span>${esc(teamById(season, w).name)}</span></div>` : ''}</div></div></section>`;
+  };
+  const semis = find('semi');
+  const proj = (i: number): [string | null, string] => [semis.length ? null : tbl[i]?.team.id ?? null, `${i + 1}-е место${semis.length ? '' : ' сейчас'}`];
+  const po = block('Плей-офф лиги', [[semis[0], proj(0), proj(3)], [semis[1], proj(1), proj(2)]], 'final', 'semi');
+  const ints = find('intl-semi');
+  const wc = block('Кубок мира', [[ints[0], [null, 'Чемпион лиги'], [null, 'Зарубежный клуб']], [ints[1], [null, 'Зарубежный клуб'], [null, 'Зарубежный клуб']]], 'intl-final', 'intl-semi');
+  return `${po}${wc}<p class="dim small">Полуфиналы до двух побед, финалы до трёх. Пока регулярный сезон идёт, в сетке показаны команды на нужных местах сейчас.</p>`;
 }
 
 function bindTableTabs() {
   bindSeg('tt', (v) => {
-    tableTab = v as 'table' | 'cal';
+    tableTab = v as typeof tableTab;
     table();
   });
 }
@@ -1022,9 +1045,11 @@ function draft() {
   const me = humanTeam(season);
   const fx = humanFixture(season)!;
   const opp = teamById(season, fx.home === me.id ? fx.away : fx.home);
-  const mySide: 0 | 1 = fx.home === me.id ? 0 : 1;
+  // В серии стороны карты меняются каждую игру
+  const gameNo = humanSeries(season)!.next;
+  const mySide: 0 | 1 = (fx.home === me.id) === (gameNo % 2 === 1) ? 0 : 1;
   const teams: [Team, Team] = mySide === 0 ? [me, opp] : [opp, me];
-  const rng = new Rng(season.seed + season.week * 31);
+  const rng = new Rng(season.seed + season.week * 31 + (gameNo - 1) * 7907);
   const d = newDraft();
   let sel: string | null = null;
   let filter: Role | 'all' = 'all';
@@ -1220,8 +1245,9 @@ function lineup(teams: [Team, Team], mySide: 0 | 1, picks: [string[], string[]])
     document.getElementById('go')!.onclick = () => {
       const p: [string[], string[]] = mySide === 0 ? [mine, theirs] : [theirs, mine];
       const st: [Strategy, Strategy] = mySide === 0 ? [strat, foeStrat] : [foeStrat, strat];
-      const m = new Match(matchSetup(season, teams, p, season.seed + season.week * 977 + season.seasonNo * 13, { strategies: st, big: humanFixture(season)!.stage !== 'league' }));
-      vsIntro(teams, STAGE_NAMES[humanFixture(season)!.stage], () => playMatch(m, 'live'));
+      const ser = humanSeries(season)!;
+      const m = new Match(matchSetup(season, teams, p, season.seed + season.week * 977 + season.seasonNo * 13 + (ser.next - 1) * 104729, { strategies: st, big: ser.fx.stage !== 'league' }));
+      vsIntro(teams, STAGE_NAMES[ser.fx.stage] + (ser.bestOf > 1 ? ` · игра ${ser.next} · счёт ${ser.score[0]}:${ser.score[1]}` : ''), () => playMatch(m, 'live'));
     };
   };
   render();
@@ -1659,26 +1685,81 @@ function result(m: Match) {
   const winner = m.setup.teams[s.winner as 0 | 1];
   const won = winner.id === me.id;
   sfx(won ? 'win' : 'lose');
-  const fx = humanFixture(season)!;
+  const ser = humanSeries(season)!;
+  const fx = ser.fx;
   const opp = m.setup.teams.find((t) => t.id !== me.id)!;
+  const homeFirst = m.setup.teams[0].id === fx.home;
+  const kills: [number, number] = homeFirst ? [s.kills[0], s.kills[1]] : [s.kills[1], s.kills[0]];
+  // Счёт серии с учётом этой игры (хозяева, гости) и с вашей стороны
+  const sc: [number, number] = [ser.score[0] + (winner.id === fx.home ? 1 : 0), ser.score[1] + (winner.id === fx.away ? 1 : 0)];
+  const meHome = fx.home === me.id;
+  const [my, their] = meHome ? sc : [sc[1], sc[0]];
+  const over = ser.bestOf === 1 || Math.max(...sc) >= ser.need;
+  const title = ser.bestOf === 1 ? (won ? 'Победа' : 'Поражение') : over ? (my > their ? 'Серия выиграна' : 'Серия проиграна') : won ? `Победа в игре ${ser.next}` : `Поражение в игре ${ser.next}`;
+  const scoreLine = ser.bestOf > 1
+    ? `<div class="ser-score"><span>${crest(me.color, me.tag, 28, me.emblem)}<b>${esc(me.tag)}</b></span><b class="n">${my}<i>:</i>${their}</b><span><b>${esc(opp.tag)}</b>${crest(opp.color, opp.tag, 28, opp.emblem)}</span><small>${STAGE_NAMES[fx.stage]} · до ${ser.need} побед</small></div>`
+    : '';
   const overlay = document.createElement('div');
   overlay.className = 'overlay';
   overlay.innerHTML = `<div class="sheet full">
-    <h2 class="${won ? 'win' : 'lose'}">${won ? 'Победа' : 'Поражение'}</h2>
+    <h2 class="${(over ? my > their : won) ? 'win' : 'lose'}">${title}</h2>${scoreLine}
     ${matchTabs(m, reviewHtml(m, m.setup.teams[0].id === me.id ? 0 : 1))}
-    <div class="sheet-foot"><button class="cta wide" id="cont">Дальше</button></div></div>`;
+    <div class="sheet-foot"><button class="cta wide" id="cont">${over ? 'Дальше' : `К игре ${ser.next + 1}`}</button></div></div>`;
   app.appendChild(overlay);
   bindMatchTabs(overlay);
   document.getElementById('cont')!.onclick = () => {
     const order = lastDraft?.order;
     const bans: [string[], string[]] = lastDraft ? lastDraft.bans : [[], []];
-    saveReplay(season, `С${season.seasonNo}, ${STAGE_NAMES[fx.stage]}: ${won ? 'победа' : 'поражение'} против ${opp.tag} ${s.kills[0]}:${s.kills[1]}`, m.setup);
+    const gameTxt = ser.bestOf > 1 ? `игра ${ser.next}, ` : '';
+    saveReplay(season, `С${season.seasonNo}, ${STAGE_NAMES[fx.stage]}: ${gameTxt}${won ? 'победа' : 'поражение'} против ${opp.tag} ${s.kills[0]}:${s.kills[1]}`, m.setup);
     const mine = m.setup.teams[0].id === me.id ? 0 : 1;
     const bestMulti = s.events.reduce((a, e) => (e.kind === 'kill' && e.killer?.side === mine ? Math.max(a, e.multi) : a), 0);
-    finishWeek(season, { winner: winner.id, kills: [s.kills[0], s.kills[1]] }, matchRecord(m, bans, order), bestMulti);
+    const rec = matchRecord(m, bans, order);
+    const res = addSeriesGame(season, { winner: winner.id, kills }, rec);
     lastDraft = null;
-    home();
+    overlay.remove();
+    if (!res) return draft(); // следующая игра серии
+    weekDone(() => finishWeek(season, res, rec, bestMulti));
   };
+}
+
+// Завершить неделю и показать итоги тура: все матчи и как изменилась таблица
+function weekDone(run: () => void) {
+  const week = season.week;
+  const before = standings(season).map((x) => x.team.id);
+  run();
+  const fxs = season.fixtures.filter((f) => f.week === week && f.result);
+  home();
+  if (fxs.length) roundSheet(week, fxs, before);
+}
+
+function roundSheet(week: number, fxs: Fixture[], before: string[]) {
+  const me = humanTeam(season);
+  const league = fxs[0].stage === 'league';
+  const row = (f: Fixture) => {
+    const h = teamById(season, f.home);
+    const a = teamById(season, f.away);
+    const r = f.result!;
+    const sc = r.games ? `${r.games[0]}:${r.games[1]}` : `${r.kills[0]}:${r.kills[1]}`;
+    const mine = h.id === me.id || a.id === me.id;
+    return `<div class="rr ${mine ? 'me' : ''}">
+      <span class="rt ${r.winner === h.id ? 'w' : ''}">${crest(h.color, h.tag, 22, h.emblem)}<b>${esc(h.tag)}</b></span>
+      <span class="rs">${sc}<small>${r.games ? 'серия' : 'убийства'}</small></span>
+      <span class="rt r ${r.winner === a.id ? 'w' : ''}"><b>${esc(a.tag)}</b>${crest(a.color, a.tag, 22, a.emblem)}</span></div>`;
+  };
+  const table = league
+    ? `<h3>Таблица</h3><div class="rtab">${standings(season)
+        .map((x, i) => {
+          const was = before.indexOf(x.team.id);
+          const d = week > 1 ? was - i : 0;
+          return `<div class="${x.team.human ? 'me' : ''}"><span class="pl">${i + 1}</span><b>${esc(x.team.name)}</b><span class="dl ${d > 0 ? 'up' : d < 0 ? 'down' : ''}">${d > 0 ? '▲' + d : d < 0 ? '▼' + -d : ''}</span><span>${x.wins}–${x.losses}</span></div>`;
+        })
+        .join('')}</div>`
+    : '';
+  const s = sheet(`<h2>Итоги тура</h2><p class="dim small">${league ? `Неделя ${week}` : STAGE_NAMES[fxs[0].stage][0].toUpperCase() + STAGE_NAMES[fxs[0].stage].slice(1)}</p>
+    <div class="rlist">${fxs.map(row).join('')}</div>${table}
+    <button class="cta wide" id="ok">Понятно</button>`);
+  s.el.querySelector<HTMLButtonElement>('#ok')!.onclick = s.close;
 }
 
 document.addEventListener('visibilitychange', () => {

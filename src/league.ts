@@ -31,7 +31,16 @@ export interface Fixture {
   home: string;
   away: string;
   stage: Stage;
-  result?: { winner: string; kills: [number, number] };
+  // kills: сумма за серию (хозяева, гости); games: счёт серии, если игр больше одной
+  result?: { winner: string; kills: [number, number]; games?: [number, number] };
+}
+
+// Плей-офф и Кубок мира играются сериями: полуфиналы до двух побед, финалы до трёх
+export const BEST_OF: Record<Stage, number> = { league: 1, semi: 3, final: 5, 'intl-semi': 3, 'intl-final': 5 };
+export const winsNeeded = (st: Stage) => Math.ceil(BEST_OF[st] / 2);
+export interface SeriesGame {
+  winner: string;
+  kills: [number, number]; // хозяева, гости
 }
 
 export type StaffRole = 'analyst' | 'coach' | 'psych';
@@ -150,6 +159,7 @@ export interface Season {
   meta: Meta;
   unseenPatch: boolean;
   newHeroes: string[]; // вышли с последним большим патчем, ещё не показаны
+  series: { week: number; games: SeriesGame[] } | null; // ваша незаконченная серия
   market: Player[]; // свободные агенты
   academy: Player[];
   academyOpen: boolean;
@@ -278,6 +288,7 @@ export function newSeason(seed = Date.now() % 1e9, opts?: NewGame): Season {
     meta: newMeta(seed),
     unseenPatch: true,
     newHeroes: [],
+    series: null,
     market: [],
     academy: [],
     academyOpen: false,
@@ -440,6 +451,37 @@ export function humanFixture(s: Season): Fixture | undefined {
   return s.fixtures.find((f) => f.week === s.week && (f.home === h || f.away === h));
 }
 
+// Ваша серия на этой неделе: сыгранные игры и счёт (хозяева, гости)
+export function humanSeries(s: Season) {
+  const fx = humanFixture(s);
+  if (!fx) return null;
+  if (s.series && s.series.week !== s.week) s.series = null;
+  const games = s.series?.games ?? [];
+  const score: [number, number] = [0, 0];
+  for (const g of games) score[g.winner === fx.home ? 0 : 1]++;
+  return { fx, games, score, need: winsNeeded(fx.stage), bestOf: BEST_OF[fx.stage], next: games.length + 1 };
+}
+
+// Записать вашу игру серии. Возвращает итог серии, когда она закончена
+export function addSeriesGame(s: Season, g: SeriesGame, rec?: MatchRecord): Fixture['result'] | null {
+  const fx = humanFixture(s)!;
+  if (!s.series || s.series.week !== s.week) s.series = { week: s.week, games: [] };
+  s.series.games.push(g);
+  const st = humanSeries(s)!;
+  if (Math.max(...st.score) < st.need) {
+    if (rec) record(s.meta, rec);
+    save(s);
+    return null;
+  }
+  const kills: [number, number] = [0, 0];
+  for (const x of st.games) {
+    kills[0] += x.kills[0];
+    kills[1] += x.kills[1];
+  }
+  s.series = null;
+  return { winner: st.score[0] > st.score[1] ? fx.home : fx.away, kills, games: BEST_OF[fx.stage] > 1 ? st.score : undefined };
+}
+
 export interface Standing {
   team: Team;
   played: number;
@@ -578,7 +620,7 @@ const winnerOf = (s: Season, week: number, stage: Stage) =>
   s.fixtures.filter((f) => f.week === week && f.stage === stage).map((f) => f.result!.winner);
 
 // Сыграть остальные матчи недели, подвести финансы и перейти дальше
-export function finishWeek(s: Season, humanResult?: { winner: string; kills: [number, number] }, humanRec?: MatchRecord, bestMulti = 0) {
+export function finishWeek(s: Season, humanResult?: Fixture['result'], humanRec?: MatchRecord, bestMulti = 0) {
   const rng = new Rng(s.seed + s.week * 104729 + s.seasonNo * 7);
   const me = humanTeam(s);
   applyTraining(s);
@@ -592,8 +634,16 @@ export function finishWeek(s: Season, humanResult?: { winner: string; kills: [nu
     }
     const home = teamById(s, f.home);
     const away = teamById(s, f.away);
-    const st = aiMatch(s, home, away, rng);
-    f.result = { winner: st.winner === 0 ? home.id : away.id, kills: [st.kills[0], st.kills[1]] };
+    // Серия: играем, пока кто-то не наберёт нужное число побед
+    const score: [number, number] = [0, 0];
+    const kills: [number, number] = [0, 0];
+    while (Math.max(...score) < winsNeeded(f.stage)) {
+      const st = aiMatch(s, home, away, rng);
+      score[st.winner === 0 ? 0 : 1]++;
+      kills[0] += st.kills[0];
+      kills[1] += st.kills[1];
+    }
+    f.result = { winner: score[0] > score[1] ? home.id : away.id, kills, games: BEST_OF[f.stage] > 1 ? score : undefined };
   }
   const ai = s.teams.filter((t) => !t.human && !t.foreign);
   for (let i = 0; i < SCRIMS; i++) {
