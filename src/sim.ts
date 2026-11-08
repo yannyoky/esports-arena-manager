@@ -82,6 +82,12 @@ export interface Unit extends Ent {
   multi: number; // убийств подряд за короткое время
   lastKill: number;
   streak: number; // убийств подряд без смерти
+  // Поведение на линии (правила v3): размен ударами и ганки
+  trade: number; // сколько ещё длится размен
+  tradeCd: number; // пауза до следующего размена
+  foe: Unit | null; // цель размена или ганка
+  gank: number; // сколько ещё длится ганк
+  gankCd: number;
 }
 
 export type NeutralType = 'camp' | 'spirit' | 'colossus';
@@ -250,6 +256,7 @@ export class Match {
           stun: 0, hidden: 0, dead: 0, kills: 0, deaths: 0, dealt: 0, healed: 0, level: 1, xp: 0,
           homeX: hx, homeY: hy, retreating: false, calm: 0, thinkT: this.rng.range(0, 0.3), intent: { kind: 'home' }, aggro: 0,
           face: side === 0 ? 1 : -1, moving: false, swing: 0, cast: 0,
+          trade: 0, tradeCd: 0, foe: null, gank: 0, gankCd: 0,
         });
       });
     }
@@ -595,6 +602,7 @@ export class Match {
     const deadFoes = s.units.filter((e) => e.side !== u.side && e.dead > 4).length;
     const deadMine = s.units.filter((e) => e.side === u.side && e.dead > 0).length;
     const v2 = (this.setup.ver ?? 1) >= 2;
+    const v3 = (this.setup.ver ?? 1) >= 3;
     // v2: один убитый в начале игры ещё не повод всей команде бросать линии
     const numbers = v2 ? deadFoes - deadMine >= 2 || (deadFoes - deadMine >= 1 && s.time > 140) : deadFoes - deadMine >= 1;
     const group = v2
@@ -659,6 +667,16 @@ export class Match {
     if (obj && (u.slot === 3 || u.slot === 4 || u.slot === 1 || dist(u, obj) < (v2 && !group ? 220 : 450)))
       return (u.intent = { kind: 'attack', target: obj });
 
+    // v3: фаза линий как в МОБА — ганки лесника и мидера, размены ударами на линии
+    if (v3 && !group) {
+      const g = this.gankIntent(u, iq);
+      if (g) return (u.intent = g);
+      if (anchor) {
+        const tr = this.tradeIntent(u, aggr);
+        if (tr) return (u.intent = tr);
+      }
+    }
+
     // Перевес в числе или стратегия: давим ближайшее строение всей командой
     if (group) return (u.intent = this.groupIntent(u, numbers));
 
@@ -679,6 +697,71 @@ export class Match {
       }
     }
     return (u.intent = this.laneIntent(u, laneOf(u.slot)));
+  }
+
+  // Ганк: лесник (и мидер) ищет врага, который зашёл далеко на нашу половину или ранен, и идёт его ловить
+  private gankIntent(u: Unit, iq: number): Intent | null {
+    const s = this.s;
+    const t = u.foe;
+    if (u.gank > 0 && t && t.dead <= 0 && t.hidden <= 0) {
+      const safe = !this.underEnemyTower(u.side, t) || t.hp < t.maxHp * 0.25;
+      if (safe && !(u.hp < u.maxHp * 0.35)) return dist(u, t) < u.champ.range + 160 ? { kind: 'attack', target: t } : { kind: 'move', x: t.x, y: t.y };
+      u.gank = 0;
+    }
+    if (u.gank > 0) u.gank = 0;
+    if (u.gankCd > 0 || u.hp < u.maxHp * 0.6) return null;
+    const jg = u.slot === 3;
+    const mid = u.slot === 1;
+    if (!(jg && s.time > 30) && !(mid && s.time > 50)) return null;
+    // мидер уходит, только когда его линия спокойна
+    if (mid && this.visibleEnemies(u, 300).length) return null;
+    let best: Unit | null = null;
+    let bs = jg ? 0.9 : 1.4;
+    for (const e of s.units) {
+      if (e.side === u.side || e.dead > 0 || e.hidden > 0 || e.slot === 3) continue;
+      const lane = laneOf(e.slot);
+      if (mid && lane === 1) continue;
+      const d = dist(u, e);
+      if (d > (jg ? 720 : 520) || this.underEnemyTower(u.side, e)) continue;
+      const t = nearestT(lane, e.x, e.y);
+      const over = u.side === 0 ? 0.5 - t : t - 0.5; // >0: враг на нашей половине
+      const help = s.units.some((a) => a.side === u.side && a !== u && a.dead <= 0 && laneOf(a.slot) === lane && a.slot !== 3 && dist(a, e) < 320);
+      const score = over * 3 + (1 - e.hp / e.maxHp) * 1.6 + (help ? 0.5 : 0) - d / 900 + iq * 0.35 + this.rng.range(-0.15, 0.15);
+      if (score > bs) {
+        bs = score;
+        best = e;
+      }
+    }
+    if (!best) {
+      u.gankCd = 3;
+      return null;
+    }
+    u.foe = best;
+    u.gank = 11;
+    u.gankCd = jg ? 20 : 30;
+    return { kind: 'move', x: best.x, y: best.y };
+  }
+
+  // Размен на линии: короткая атака по сопернику, когда выгодно, потом снова фарм
+  private tradeIntent(u: Unit, aggr: number): Intent | null {
+    const f = u.foe;
+    if (u.trade > 0 && f && f.dead <= 0 && f.hidden <= 0 && dist(u, f) < u.champ.range + 90 && !this.underEnemyTower(u.side, f)) return { kind: 'attack', target: f };
+    if (u.tradeCd > 0) return null;
+    const lane = laneOf(u.slot);
+    const foes = this.visibleEnemies(u, u.champ.range + 80).filter((e) => laneDist(lane, e.x, e.y) < 130 && !this.underEnemyTower(u.side, e));
+    if (!foes.length || this.underEnemyTower(u.side, u)) return null;
+    const e = foes.sort((a, b) => a.hp / a.maxHp - b.hp / b.maxHp)[0];
+    const creeps = this.s.creeps.filter((c) => c.side !== u.side && c.hp > 0 && dist(c, u) < 150).length;
+    const style = (u.player.atk - 60) / 120 + (u.player.trait === 'star' ? 0.08 : 0) + (u.champ.role === 'assassin' || u.champ.role === 'fighter' ? 0.08 : u.champ.role === 'support' ? -0.05 : 0);
+    const want = u.hp / u.maxHp - e.hp / e.maxHp + style - creeps * 0.04 + (1 - aggr) + this.rng.range(-0.12, 0.12);
+    if (want < -0.02) {
+      u.tradeCd = 1.5;
+      return null;
+    }
+    u.foe = e;
+    u.trade = this.rng.range(1.2, 2.4);
+    u.tradeCd = u.trade + this.rng.range(2.5, 5);
+    return { kind: 'attack', target: e };
   }
 
   private nextCamp(u: Unit, iq: number): Neutral | undefined {
@@ -742,6 +825,11 @@ export class Match {
     else {
       const own = this.ownTower(u.side, lane);
       t = own.kind === 'core' ? (u.side === 0 ? 0.04 : 0.96) : towerT(u.side, (own as Tower).tier) + dir * 0.02;
+    }
+    // v3: в начале линии герои выходят к месту встречи волн, а не ждут у своей башни
+    if ((this.setup.ver ?? 1) >= 3 && !s.creeps.some((c) => c.side === foe && c.lane === lane && c.hp > 0 && (c.t - 0.5) * dir < 0.08)) {
+      const meet = 0.5 - dir * (ranged ? 0.09 : 0.06);
+      if ((meet - t) * dir > 0) t = meet;
     }
     const [x, y] = lanePoint(lane, t);
     return { kind: 'move', x: x + (u.player.iq % 7) * 3 - 9, y: y + ((u.player.atk * 3) % 13) - 6 };
@@ -1050,6 +1138,10 @@ export class Match {
       }
       u.atkT -= dt;
       u.abT -= dt;
+      u.trade = Math.max(0, u.trade - dt);
+      u.tradeCd = Math.max(0, u.tradeCd - dt);
+      u.gank = Math.max(0, u.gank - dt);
+      u.gankCd = Math.max(0, u.gankCd - dt);
       u.hidden = Math.max(0, u.hidden - dt);
       if (u.stun > 0) {
         u.stun -= dt;

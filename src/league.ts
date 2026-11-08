@@ -579,7 +579,7 @@ export function matchRecord(m: Match, bans: [string[], string[]], order?: Record
 // Настройка матча: снимок составов, чтобы повтор не зависел от будущих изменений
 export function matchSetup(s: Season, teams: [Team, Team], picks: [string[], string[]], seed: number, extra: Partial<MatchSetup> = {}): MatchSetup {
   return JSON.parse(
-    JSON.stringify({ teams, picks, seed, patch: s.meta.patch, chem: [chemistry(teams[0]), chemistry(teams[1])], ver: 2, ...extra }),
+    JSON.stringify({ teams, picks, seed, patch: s.meta.patch, chem: [chemistry(teams[0]), chemistry(teams[1])], ver: 3, ...extra }),
   );
 }
 

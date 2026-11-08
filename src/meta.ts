@@ -31,7 +31,7 @@ export const BASE_RULES: Rules = {
   siegeTime: 60,
   colossusXp: 200,
   respawn: 1,
-  lanesXp: 1.14,
+  lanesXp: 1.16,
   pickBonus: 1.25,
 };
 
