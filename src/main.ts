@@ -18,7 +18,7 @@ import {
   exportSave, hasBackup, loadBackup, parseSave, DIFFICULTY, Difficulty,
   humanFixture, humanTeam, load, matchRecord, matchSetup, negotiate, newSeason, openAcademy, owner, potentialText, release, roster,
   save, saveReplay, sell, sellPrice, signingBonus, sponsorText, staffCost, staffSalary, standings, startNextSeason, swapStarter,
-  teamById, totalWeeks, transferFee, upfront, humanSeries, addSeriesGame, canScrim, playScrim, scoutNow, Scout, BEST_OF, winsNeeded,
+  teamById, totalWeeks, transferFee, upfront, humanSeries, addSeriesGame, canScrim, playScrim, scoutNow, Scout, applyPerformance, BEST_OF, winsNeeded,
 } from './league';
 import { portrait } from './models';
 import { CASTERS, Caster, Line } from './commentary';
@@ -232,7 +232,7 @@ const ovrTier = (v: number) => (v >= 70 ? 3 : v >= 60 ? 2 : v >= 50 ? 1 : 0);
 function playerRow(p: Player, right = '', cls = '') {
   return `<button class="prow ${cls}" data-p="${p.id}">
     <span class="ovr t${ovrTier(ovr(p))}"><b>${r1(ovr(p))}</b><small>${POS_SHORT[p.pos]}</small></span>
-    <div class="pmain"><b>${esc(p.nick)}</b><small>${p.age} лет${p.trait ? ` · ${TRAIT_INFO[p.trait].name.toLowerCase()}` : ''}${p.fatigue > 60 ? ' · <i class="warn">устал</i>' : ''}${p.morale < 40 ? ' · <i class="warn">недоволен</i>' : ''}</small></div>
+    <div class="pmain"><b>${esc(p.nick)}</b><small>${p.age} лет${p.trait ? ` · ${TRAIT_INFO[p.trait].name.toLowerCase()}` : ''}${p.form >= 92 ? ' · <i class="hot">в ударе</i>' : p.form <= 58 ? ' · <i class="warn">кризис формы</i>' : ''}${p.fatigue > 60 ? ' · <i class="warn">устал</i>' : ''}${p.promise ? ' · <i class="warn">ждёт места</i>' : (p.benchWeeks ?? 0) >= 3 ? ` · <i class="warn">${p.benchWeeks} нед. в запасе</i>` : ''}${p.morale < 40 ? ' · <i class="warn">недоволен</i>' : ''}</small></div>
     <div class="favs">${p.favs.map((id) => img(champById(id), 'xs')).join('')}</div>
     ${right}</button>`;
 }
@@ -1882,6 +1882,7 @@ function result(m: Match) {
     const mine = m.setup.teams[0].id === me.id ? 0 : 1;
     const bestMulti = s.events.reduce((a, e) => (e.kind === 'kill' && e.killer?.side === mine ? Math.max(a, e.multi) : a), 0);
     const rec = matchRecord(m, bans, order);
+    applyPerformance(season, s.units.filter((u) => u.side === mine).sort((x, y) => mvpScore(y) - mvpScore(x)).map((u) => u.player.id));
     const res = addSeriesGame(season, { winner: winner.id, kills }, rec);
     lastDraft = null;
     overlay.remove();

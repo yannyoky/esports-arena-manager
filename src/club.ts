@@ -6,7 +6,7 @@ import { Rng } from './rng';
 
 // ---------- События ----------
 
-export type EventKind = 'injury' | 'conflict' | 'raise' | 'offer' | 'fans' | 'stream' | 'press';
+export type EventKind = 'injury' | 'conflict' | 'raise' | 'offer' | 'fans' | 'stream' | 'press' | 'transfer';
 
 export interface ClubEvent {
   id: string;
@@ -32,6 +32,26 @@ export function rollEvents(s: Season, rng: Rng, played: boolean, won: boolean) {
   const id = () => 'e' + s.seasonNo + '-' + s.week + '-' + Math.floor(rng.next() * 1e6);
   const leader = starters.some((p) => p.trait === 'leader');
   const out: ClubEvent[] = [];
+
+  // Просьба о трансфере: засидевшийся на скамейке сильный игрок или тот, кто совсем несчастлив
+  const minStarter = Math.min(...starters.map((p) => ovr(p)));
+  const unhappy = all.find(
+    (p) => !p.promise && ((me.bench.includes(p) && (p.benchWeeks ?? 0) >= 3 && ovr(p) >= minStarter - 4) || p.morale < 22),
+  );
+  if (unhappy && rng.next() < 0.6 && all.length > 5) {
+    const bench = me.bench.includes(unhappy);
+    out.push({
+      id: id(), kind: 'transfer', pid: unhappy.id, title: 'Просьба о трансфере',
+      text: bench
+        ? `${unhappy.nick} уже ${unhappy.benchWeeks} нед. сидит на скамейке и просит отпустить его туда, где он будет играть.`
+        : `${unhappy.nick} несчастлив в клубе и через агента просит о трансфере.`,
+      choices: [
+        { label: bench ? 'Обещать место в составе' : 'Поговорить и поддержать', hint: bench ? 'Настроение вверх, но если через 3 недели он всё ещё на скамейке, будет хуже' : 'Настроение заметно вверх' },
+        { label: 'Выставить на трансфер', hint: 'Игрок уйдёт сразу за рыночную цену' },
+        { label: 'Отказать', hint: 'Сильно расстроится, команда это заметит' },
+      ],
+    });
+  }
 
   const r = rng.next();
   const a = rng.pick(starters);
@@ -110,7 +130,7 @@ export function rollEvents(s: Season, rng: Rng, played: boolean, won: boolean) {
             text: 'Журналист: «Уверенная победа. Что скажете болельщикам?»',
             choices: [
               { label: 'Скромно: работаем дальше', hint: 'Команда чуть увереннее, немного новых болельщиков' },
-              { label: 'Мы лучшие в лиге!', hint: 'Много новых болельщиков, игроки на подъёме' },
+              { label: 'Мы лучшие в лиге!', hint: 'Много новых болельщиков, но поражение в следующем матче ударит больнее' },
               { label: 'Соперник был силён', hint: 'Болельщики ценят уважение, команда сплачивается' },
             ],
           }
@@ -220,6 +240,20 @@ export function resolveEvent(s: Season, id: string, choice: number, auto = false
         txt = `${p.nick} недоволен запретом.`;
       }
       break;
+    case 'transfer':
+      if (!p) break;
+      if (choice === 0) {
+        p.morale = clamp(p.morale + 15);
+        if (me.bench.includes(p)) p.promise = s.seasonNo * 100 + s.week;
+        txt = me.bench.includes(p) ? `${p.nick} ждёт места в составе в ближайшие недели.` : `${p.nick} остаётся и готов работать.`;
+      } else if (choice === 1 && !auto && roster(me).length > 5) {
+        txt = sell(s, p);
+      } else {
+        p.morale = clamp(p.morale - 15);
+        for (const x of team) if (x !== p) x.together = Math.max(0, x.together - 1);
+        txt = `${p.nick} остаётся против воли.`;
+      }
+      break;
     case 'press':
       if (e.won) {
         if (choice === 0) {
@@ -228,6 +262,7 @@ export function resolveEvent(s: Season, id: string, choice: number, auto = false
         } else if (choice === 1) {
           for (const x of team) x.morale = clamp(x.morale + 6);
           s.fans += 150;
+          if (!auto) s.boast = s.seasonNo * 100 + s.week; // следующий матч проверит эти слова
         } else {
           for (const x of team) x.together += 1;
           s.fans += 90;

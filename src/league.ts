@@ -162,6 +162,7 @@ export interface Season {
   series: { week: number; games: SeriesGame[] } | null; // ваша незаконченная серия
   scrimWeek: number; // неделя последнего скрима (один в неделю)
   scout: Scout | null; // разведка соперника по скриму
+  boast: number; // когда тренер заявил «мы лучшие» (сезон*100+неделя)
   market: Player[]; // свободные агенты
   academy: Player[];
   academyOpen: boolean;
@@ -293,6 +294,7 @@ export function newSeason(seed = Date.now() % 1e9, opts?: NewGame): Season {
     series: null,
     scrimWeek: 0,
     scout: null,
+    boast: 0,
     market: [],
     academy: [],
     academyOpen: false,
@@ -508,6 +510,16 @@ export function playScrim(s: Season, oppId: string): ScrimResult {
   s.log.unshift(`Скрим с ${opp.tag}: ${won ? 'победа' : 'поражение'} ${m.s.kills[0]}:${m.s.kills[1]}.${scouted ? ' Драфт соперника записан.' : ''}`);
   save(s);
   return { won, kills: [m.s.kills[0], m.s.kills[1]], played, scouted };
+}
+
+// Личная игра в матче двигает форму: лучший игрок разогревается, худший теряет уверенность
+export function applyPerformance(s: Season, best2worst: string[]) {
+  const me = humanTeam(s);
+  const delta = [5, 2, 0, -2, -4];
+  best2worst.forEach((id, i) => {
+    const p = me.players.find((x) => x.id === id);
+    if (p) p.form = Math.max(45, Math.min(100, p.form + (delta[i] ?? 0)));
+  });
 }
 
 // Разведка на эту неделю, если скрим был с нынешним соперником
@@ -737,6 +749,31 @@ export function finishWeek(s: Season, humanResult?: Fixture['result'], humanRec?
     }
   }
   for (const p of me.bench) p.morale = clamp(p.morale - 2 * (1 - psy * 0.25));
+  // Скамейка и обещания: кто давно не играет, тот начинает нервничать
+  const nowW = s.seasonNo * 100 + s.week;
+  for (const p of me.bench) p.benchWeeks = (p.benchWeeks ?? 0) + (played ? 1 : 0);
+  for (const p of me.players) {
+    p.benchWeeks = 0;
+    if (p.promise) p.promise = 0; // обещание выполнено
+  }
+  for (const p of me.bench)
+    if (p.promise && nowW - p.promise >= 3) {
+      p.promise = 0;
+      p.morale = clamp(p.morale - 25);
+      s.log.unshift(`${p.nick}: обещанного места в составе так и не дали. Игрок в ярости.`);
+    }
+  // Громкие слова на пресс-конференции проверяются следующим матчем
+  if (played && s.boast && nowW - s.boast <= 3) {
+    if (won) {
+      s.fans = Math.round(s.fans * 1.02);
+      s.log.unshift('Сказали «мы лучшие» и подтвердили: болельщики в восторге.');
+    } else {
+      s.fans = Math.round(s.fans * 0.96);
+      for (const p of me.players) p.morale = clamp(p.morale - 5);
+      s.log.unshift('После слов «мы лучшие» поражение особенно обидно: пресса смеётся, игроки подавлены.');
+    }
+    s.boast = 0;
+  }
   for (const p of roster(me)) {
     p.fatigue = Math.max(0, p.fatigue - 6 - psy * 2 - s.fac.rest * 3);
     p.together += 1 + s.staff.coach * 0.3 + (me.players.some((x) => x.trait === 'leader') ? 0.3 : 0);

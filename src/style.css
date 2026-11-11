@@ -894,3 +894,4 @@ button.qrow:not(.qlist .qrow) { border-radius: 16px; background: rgba(31, 26, 39
 .scout-box small { color: var(--muted); font-size: 12px; line-height: 1.4; }
 .scr-picks { display: flex; gap: 6px; }
 .scr-picks .pt.sm { width: 40px; height: 40px; border-radius: 9px; }
+.prow i.hot { color: var(--stage); font-style: normal; }
