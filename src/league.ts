@@ -3,7 +3,7 @@
 import { ABILITY_TEXT, CHAMPIONS, Player, Pos, Team, askSalary, champById, makePlayer, makeTeams, ovr, releasesAt, setPool, traitFor, value } from './data';
 import { ClubEvent, Goal, checkAchievements, makeGoals, rollEvents, settleGoals } from './club';
 import { autoDraftFull } from './draft';
-import { Match, MatchSetup } from './sim';
+import { Match, MatchSetup, Strategy, autoStrategy } from './sim';
 import { Meta, MatchRecord, PATCH_EVERY, newMeta, record, releasePatch } from './meta';
 import { Rng } from './rng';
 
@@ -160,6 +160,8 @@ export interface Season {
   unseenPatch: boolean;
   newHeroes: string[]; // вышли с последним большим патчем, ещё не показаны
   series: { week: number; games: SeriesGame[] } | null; // ваша незаконченная серия
+  scrimWeek: number; // неделя последнего скрима (один в неделю)
+  scout: Scout | null; // разведка соперника по скриму
   market: Player[]; // свободные агенты
   academy: Player[];
   academyOpen: boolean;
@@ -289,6 +291,8 @@ export function newSeason(seed = Date.now() % 1e9, opts?: NewGame): Season {
     unseenPatch: true,
     newHeroes: [],
     series: null,
+    scrimWeek: 0,
+    scout: null,
     market: [],
     academy: [],
     academyOpen: false,
@@ -463,6 +467,56 @@ export function humanSeries(s: Season) {
 }
 
 // Записать вашу игру серии. Возвращает итог серии, когда она закончена
+// Скрим: тренировочная игра с другим клубом. Не идёт в таблицу и мету,
+// зато игроки наигрывают героев, а против будущего соперника видно его драфт
+export interface Scout {
+  team: string;
+  week: number;
+  heroes: string[]; // кого соперник брал
+  strat: Strategy;
+}
+export interface ScrimResult {
+  won: boolean;
+  kills: [number, number]; // мы, они
+  played: { nick: string; hero: string; prac: number }[];
+  scouted: boolean;
+}
+export const canScrim = (s: Season) => s.scrimWeek !== s.week + s.seasonNo * 100 && !!humanFixture(s) && !s.finished;
+
+export function playScrim(s: Season, oppId: string): ScrimResult {
+  const me = humanTeam(s);
+  const opp = teamById(s, oppId);
+  const rng = new Rng(s.seed + s.week * 3571 + s.seasonNo * 17);
+  const d = autoDraftFull(me, opp, rng, s.meta);
+  const m = new Match(matchSetup(s, [me, opp], d.picks, Math.floor(rng.next() * 1e9)), false);
+  m.runToEnd();
+  s.scrimWeek = s.week + s.seasonNo * 100;
+  const played: ScrimResult['played'] = [];
+  for (const u of m.s.units.filter((x) => x.side === 0)) {
+    const p = me.players.find((x) => x.id === u.player.id);
+    if (!p) continue;
+    p.prac ??= {};
+    p.prac[u.champ.id] = Math.min(1, Math.round(((p.prac[u.champ.id] ?? 0) + 0.25) * 100) / 100);
+    p.fatigue = Math.min(100, p.fatigue + 5);
+    p.together += 0.5;
+    played.push({ nick: p.nick, hero: u.champ.id, prac: p.prac[u.champ.id] });
+  }
+  const fx = humanFixture(s);
+  const scouted = !!fx && (fx.home === oppId || fx.away === oppId);
+  if (scouted) s.scout = { team: oppId, week: s.week, heroes: d.picks[1], strat: autoStrategy(d.picks[1]) };
+  const won = m.s.winner === 0;
+  s.log.unshift(`Скрим с ${opp.tag}: ${won ? 'победа' : 'поражение'} ${m.s.kills[0]}:${m.s.kills[1]}.${scouted ? ' Драфт соперника записан.' : ''}`);
+  save(s);
+  return { won, kills: [m.s.kills[0], m.s.kills[1]], played, scouted };
+}
+
+// Разведка на эту неделю, если скрим был с нынешним соперником
+export function scoutNow(s: Season): Scout | null {
+  const fx = humanFixture(s);
+  const sc = s.scout;
+  return sc && fx && sc.week === s.week && (fx.home === sc.team || fx.away === sc.team) ? sc : null;
+}
+
 export function addSeriesGame(s: Season, g: SeriesGame, rec?: MatchRecord): Fixture['result'] | null {
   const fx = humanFixture(s)!;
   if (!s.series || s.series.week !== s.week) s.series = { week: s.week, games: [] };
@@ -539,6 +593,8 @@ function applyTraining(s: Season) {
   const rng = new Rng(s.seed + s.week * 7919 + s.seasonNo * 131);
   const me = humanTeam(s);
   for (const p of roster(me)) {
+    // наигранность героев понемногу забывается
+    if (p.prac) for (const k of Object.keys(p.prac)) p.prac[k] = Math.round(p.prac[k] * 0.95 * 100) / 100;
     if (t === 'rest') {
       p.form = Math.min(100, p.form + 15);
       p.fatigue = Math.max(0, p.fatigue - 25);

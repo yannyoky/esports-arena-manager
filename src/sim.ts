@@ -236,7 +236,7 @@ export class Match {
         // Герой не своей позиции слабее: игрок непривычен к такой роли
         const onPos = POS_ROLES[p.pos].includes(c.role) ? 1 : 0.92;
         // любимый герой даёт прибавку к владению
-        const mastery = Math.min(1.05, p.pool[c.role] / 100 + (p.favs?.includes(c.id) ? 0.12 : 0));
+        const mastery = Math.min(1.05, p.pool[c.role] / 100 + (p.favs?.includes(c.id) ? 0.12 : 0) + (p.prac?.[c.id] ?? 0) * 0.08);
         // форма, настроение и усталость
         const formK = (p.form / 100) * (0.92 + (p.morale ?? 70) / 1250) * (1 - (p.fatigue ?? 0) / 500);
         const leader = setup.teams[side].players.some((x) => x.trait === 'leader');

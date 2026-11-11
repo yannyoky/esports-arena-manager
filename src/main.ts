@@ -18,7 +18,7 @@ import {
   exportSave, hasBackup, loadBackup, parseSave, DIFFICULTY, Difficulty,
   humanFixture, humanTeam, load, matchRecord, matchSetup, negotiate, newSeason, openAcademy, owner, potentialText, release, roster,
   save, saveReplay, sell, sellPrice, signingBonus, sponsorText, staffCost, staffSalary, standings, startNextSeason, swapStarter,
-  teamById, totalWeeks, transferFee, upfront, humanSeries, addSeriesGame, BEST_OF, winsNeeded,
+  teamById, totalWeeks, transferFee, upfront, humanSeries, addSeriesGame, canScrim, playScrim, scoutNow, Scout, BEST_OF, winsNeeded,
 } from './league';
 import { portrait } from './models';
 import { CASTERS, Caster, Line } from './commentary';
@@ -376,6 +376,7 @@ function home() {
     !season.sponsor ? `<button class="qrow hot" id="sp">${ICON.coin(18)}<b>Выберите спонсора</b><span>нет дохода</span>${CHEV}</button>` : '',
     season.goals.length ? `<button class="qrow" id="goals">${ICON.table(18)}<b>Цели владельца</b><span>в норме ${goalsDone} из ${season.goals.length}</span>${CHEV}</button>` : '',
     `<button class="qrow ${season.unseenPatch ? 'hot' : ''}" id="patch">${ICON.meta(18)}<b>${season.unseenPatch ? 'Новый патч ' : 'Патч '}${p.ver}</b><span>${n ? `след. через ${n} нед.` : 'последний'}</span>${CHEV}</button>`,
+    fx ? `<button class="qrow ${canScrim(season) ? '' : 'done'}" id="scrim">${ICON.sword(18)}<b>Скрим</b><span>${canScrim(season) ? (scoutNow(season) ? 'разведка есть' : 'доступен') : scoutNow(season) ? 'сыгран · разведка есть' : 'сыгран на этой неделе'}</span>${CHEV}</button>` : '',
     `<button class="qrow" id="focus">${TRAIN_ICON[season.focus].replace('width="22" height="22"', 'width="18" height="18"')}<b>Тренировки</b><span>${TRAINING_SHORT[season.focus]}</span>${CHEV}</button>`,
   ].join('');
   shell('home', `${eventsHtml()}${top}${strip}<div class="qlist">${rows}</div>${logCard()}`);
@@ -385,6 +386,8 @@ function home() {
   const gl = document.getElementById('goals');
   if (gl) gl.onclick = () => goalsSheet();
   document.getElementById('focus')!.onclick = () => rosterScreen();
+  const sc = document.getElementById('scrim');
+  if (sc) sc.onclick = () => scrimSheet();
   const play = document.getElementById('play');
   if (play) play.onclick = () => draft();
   const sk = document.getElementById('skipweek');
@@ -425,6 +428,55 @@ function bindEvents() {
         }),
     ),
   );
+}
+
+// Скрим: выбор спарринг-партнёра. С соперником недели — разведка его драфта
+function scrimSheet() {
+  const me = humanTeam(season);
+  const fx = humanFixture(season);
+  if (!fx) return;
+  const oppId = fx.home === me.id ? fx.away : fx.home;
+  if (!canScrim(season)) {
+    const sc = scoutNow(season);
+    const s = sheet(`<h2>Скрим</h2><p class="dim">На этой неделе скрим уже сыгран. Новый можно будет провести на следующей неделе.</p>
+      ${sc ? scoutHtml(sc) : ''}<button class="cta wide" id="ok">Понятно</button>`);
+    s.el.querySelector<HTMLButtonElement>('#ok')!.onclick = s.close;
+    return;
+  }
+  const list = [oppId, ...season.teams.filter((t) => !t.human && t.id !== oppId && (!t.foreign || teamById(season, oppId).foreign)).map((t) => t.id)].slice(0, 6);
+  const s = sheet(`<h2>Скрим</h2><p class="dim small">Тренировочная игра раз в неделю. Не влияет на таблицу. Игроки наигрывают героев (до +8% к силе на этом герое) и немного устают. Против соперника недели вы увидите, каких героев и какую стратегию он любит.</p>
+    <div class="scr-list">${list
+      .map((id) => {
+        const t = teamById(season, id);
+        return `<button class="prow" data-scr="${id}">${crest(t.color, t.tag, 28, t.emblem)}<div class="pmain"><b>${esc(t.name)}</b><small>${id === oppId ? 'соперник недели · разведка драфта' : t.foreign ? 'зарубежный клуб' : record(t)}</small></div>${CHEV}</button>`;
+      })
+      .join('')}</div>`);
+  s.el.querySelectorAll<HTMLButtonElement>('[data-scr]').forEach(
+    (b) =>
+      (b.onclick = () => {
+        const r = playScrim(season, b.dataset.scr!);
+        const t = teamById(season, b.dataset.scr!);
+        s.close();
+        const sc = scoutNow(season);
+        const res = sheet(`<h2 class="${r.won ? 'win' : 'lose'}">Скрим: ${r.won ? 'победа' : 'поражение'}</h2>
+          <p class="dim">Против ${esc(t.name)} · убийства ${r.kills[0]}:${r.kills[1]}</p>
+          <h3>Наиграли героев</h3><div class="scr-heroes">${r.played
+            .map((x) => `<span>${img(champById(x.hero), 'sm')}<small><b>${esc(x.nick)}</b>${champById(x.hero).name} · +${Math.round(x.prac * 8)}%</small></span>`)
+            .join('')}</div>
+          ${r.scouted && sc ? scoutHtml(sc) : ''}
+          <button class="cta wide" id="ok">Понятно</button>`);
+        res.el.querySelector<HTMLButtonElement>('#ok')!.onclick = () => {
+          res.close();
+          home();
+        };
+      }),
+  );
+}
+
+function scoutHtml(sc: Scout) {
+  const t = teamById(season, sc.team);
+  return `<div class="scout-box"><b>${ICON.eye(14)} Разведка: ${esc(t.tag)}</b><div class="scr-picks">${sc.heroes.map((id) => img(champById(id), 'sm')).join('')}</div>
+    <small>На скриме играли «${STRATEGY_TEXT[sc.strat][0]}». В драфте эти герои отмечены значком глаза.</small></div>`;
 }
 
 function goalsSheet() {
@@ -1064,10 +1116,35 @@ function draft() {
   const isNew = (c: Champion) => meta.patch.notes.some((n) => n.id === c.id && n.kind === 'new');
   const favOf = (c: Champion) => me.players.find((p) => p.favs.includes(c.id));
   let tip: string | null = null; // совет тренера по драфту
+  const scout = scoutNow(season);
+  const scouted = (c: Champion) => !!scout && scout.heroes.includes(c.id);
+  // Почему стоит взять или забанить героя: короткие причины для панели выбора
+  const reasons = (c: Champion, act: 'ban' | 'pick') => {
+    const out: string[] = [];
+    const foeSide = (1 - mySide) as 0 | 1;
+    if (act === 'ban') {
+      if (scouted(c)) out.push(`${esc(opp.tag)} играли им на скриме`);
+      const t = tier(meta, c.id);
+      if (t === 'S' || t === 'A') out.push(`сильный на этом патче (тир ${t})`);
+      return out;
+    }
+    const mine = d.picks[mySide].map((id) => champById(id).role);
+    const theirs = d.picks[foeSide].map((id) => champById(id).role);
+    const fav = favOf(c);
+    if (fav) out.push(`♥ любимый герой ${esc(fav.nick)}`);
+    const pr = Math.max(0, ...me.players.map((p) => p.prac?.[c.id] ?? 0));
+    if (pr >= 0.2) out.push(`наигран на скримах: +${Math.round(pr * 8)}%`);
+    if (c.role === 'tank' && !mine.includes('tank')) out.push('у вас ещё нет стража');
+    if (c.role === 'support' && !mine.includes('support')) out.push('команде нужна поддержка');
+    if (c.role === 'assassin' && theirs.filter((r) => r === 'shooter' || r === 'mage' || r === 'support').length >= 2) out.push('ассасин охотится за хрупкими стрелками и магами соперника');
+    if ((c.role === 'tank' || c.role === 'support') && theirs.includes('assassin')) out.push('прикроет от ассасина соперника');
+    if (scouted(c)) out.push('соперник любит этого героя: заберите его себе');
+    return out.slice(0, 3);
+  };
   const badge = (c: Champion) => {
     const n = noteOf(c);
     const t = tier(meta, c.id);
-    return `${isNew(c) ? '<i class="pb new">NEW</i>' : ''}${t === 'S' ? '<i class="tier-s">S</i>' : ''}${n ? `<i class="pb ${n.kind}">${n.kind === 'buff' ? '▲' : '▼'}</i>` : ''}${favOf(c) ? '<i class="fav">♥</i>' : ''}${tip === c.id ? '<i class="tipl">совет</i>' : ''}`;
+    return `${isNew(c) ? '<i class="pb new">NEW</i>' : ''}${t === 'S' ? '<i class="tier-s">S</i>' : ''}${n ? `<i class="pb ${n.kind}">${n.kind === 'buff' ? '▲' : '▼'}</i>` : ''}${favOf(c) ? '<i class="fav">♥</i>' : ''}${scouted(c) ? `<i class="scb">${ICON.eye(11)}</i>` : ''}${tip === c.id ? '<i class="tipl">совет</i>' : ''}`;
   };
 
   const slots = (side: 0 | 1) => {
@@ -1133,7 +1210,10 @@ function draft() {
           .join('')}</div>
         <div class="pick-bar">${
           selC && myTurn
-            ? `<div class="info">${img(selC)}<div><b>${selC.name}</b><small>${ROLE_NAMES[selC.role]} · владение ${bestFor(selC)} · тир ${tier(meta, selC.id)}${favOf(selC) ? ` · ♥ ${esc(favOf(selC)!.nick)}` : ''}</small><small>${noteOf(selC) ? `<span class="${noteOf(selC)!.kind === 'buff' ? 'up' : 'down'}">Патч ${meta.patch.ver}: ${noteOf(selC)!.text.split(': ')[1]}</span>` : ABILITY_TEXT[selC.ab]}</small></div></div>
+            ? `<div class="info">${img(selC)}<div><b>${selC.name}</b><small>${ROLE_NAMES[selC.role]} · владение ${bestFor(selC)} · тир ${tier(meta, selC.id)}${favOf(selC) ? ` · ♥ ${esc(favOf(selC)!.nick)}` : ''}</small><small>${noteOf(selC) ? `<span class="${noteOf(selC)!.kind === 'buff' ? 'up' : 'down'}">Патч ${meta.patch.ver}: ${noteOf(selC)!.text.split(': ')[1]}</span>` : ABILITY_TEXT[selC.ab]}</small>${(() => {
+              const rs = reasons(selC, st.act);
+              return rs.length ? `<small class="why">${rs.join(' · ')}</small>` : '';
+            })()}</div></div>
                <button class="cta ${st.act}" id="lock">${st.act === 'ban' ? 'Забанить' : 'Выбрать'}</button>`
             : `<div class="hint">${myTurn
                 ? season.tutorial
