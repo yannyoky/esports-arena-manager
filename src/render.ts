@@ -1268,6 +1268,17 @@ function updateCam(m: Match, v: View, auto: boolean): Cam {
       group = hot.filter((o) => Math.hypot(o.x - best.x, o.y - best.y) < 380);
       if (group.length < 2) group = hot;
     }
+    // Тихо на карте, но идёт ганк: показываем ганкера и его цель
+    if (hot.length < 2) {
+      const ev = m.s.events;
+      for (let i = ev.length - 1; i >= 0 && i >= ev.length - 6; i--) {
+        const e = ev[i];
+        if (e.kind === 'gank' && m.s.time - e.t < 9 && e.by.dead <= 0 && e.foe.dead <= 0 && e.by.gank > 0) {
+          group = [e.by, e.foe];
+          break;
+        }
+      }
+    }
     // Свежее убийство (последние 1.5 с) держим в кадре
     const ev = m.s.events;
     const pts = group.map((u) => P(v, u.x, u.y));

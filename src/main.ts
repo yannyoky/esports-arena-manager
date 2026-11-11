@@ -1506,7 +1506,7 @@ function playMatch(m: Match, mode: 'live' | 'replay') {
     else {
       const s = sheet(`<h2>Повтор</h2>${matchTabs(m, '')}<div class="sheet-foot"><button class="cta wide" id="cont">Закрыть</button></div>`, club);
       s.el.querySelector('.sheet')!.classList.add('full');
-      bindMatchTabs(s.el);
+      bindMatchTabs(s.el, m);
       s.el.querySelector<HTMLButtonElement>('#cont')!.onclick = s.close;
     }
   };
@@ -1612,12 +1612,99 @@ function matchTabs(m: Match, review: string) {
     ['sum', 'Разбор'],
     ['stats', 'Статистика'],
   ]).replace('class="segtabs"', 'class="segtabs rtabs"')}
-    <div class="rpane" data-p="sum">${summaryHtml(m)}${review}</div>
+    <div class="rpane" data-p="sum">${summaryHtml(m)}${keyFightBtn(m)}${review}</div>
     <div class="rpane" data-p="stats" hidden>${statsHtml(m)}</div>`;
 }
 
-function bindMatchTabs(root: HTMLElement) {
+// Ключевая драка: окно в 12 секунд, где больше всего убийств (командное уничтожение весит больше)
+function keyFight(m: Match): [number, number, number] | null {
+  const ks = m.s.events.filter((e) => e.kind === 'kill' || e.kind === 'first' || e.kind === 'ace');
+  let best: [number, number, number] | null = null;
+  for (const a of ks) {
+    const win = ks.filter((e) => e.t >= a.t && e.t - a.t <= 12);
+    const score = win.reduce((x, e) => x + (e.kind === 'ace' ? 2 : 1), 0);
+    if (score >= 3 && (!best || score > best[2])) best = [a.t, win[win.length - 1].t, score];
+  }
+  return best;
+}
+const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+function keyFightBtn(m: Match) {
+  const k = keyFight(m);
+  if (!k) return '';
+  const left = Math.max(0, MATCH_TIME - k[0]);
+  return `<button class="qrow kfight" data-kf="${k[0]}" data-kf2="${k[1]}">${ICON.play(18)}<b>Повтор ключевой драки</b><span>${clock(left)} на часах</span>${CHEV}</button>`;
+}
+
+// Повтор отрезка матча: та же симуляция по сохранённым настройкам, прокрученная до начала драки
+function highlight(setup: Match['setup'], t0: number, t1: number) {
+  const start = Math.max(0, t0 - 6);
+  const end = t1 + 3;
+  const o = document.createElement('div');
+  o.className = 'hlv';
+  o.innerHTML = `<div class="hl-top"><b>Ключевая драка</b><span id="hlc"></span><button class="x" aria-label="Закрыть">×</button></div>
+    <div class="hl-field"><canvas></canvas><div class="cast" id="hlcast"></div></div>
+    <div class="hl-foot"><button class="chip" id="hlagain" style="visibility:hidden">Ещё раз</button><button class="cta" id="hlclose">Закрыть</button></div>`;
+  document.body.appendChild(o);
+  const cv = o.querySelector('canvas')!;
+  const ctx = cv.getContext('2d')!;
+  let raf = 0;
+  let alive = true;
+  const run = () => {
+    cancelAnimationFrame(raf);
+    const m = new Match(JSON.parse(JSON.stringify(setup)), false);
+    while (m.s.time < start && !m.s.over) m.step();
+    m.fxOn = true;
+    const caster = new Caster(m);
+    caster.skipPast();
+    const castEl = o.querySelector<HTMLElement>('#hlcast')!;
+    castEl.classList.remove('show');
+    (o.querySelector('#hlagain') as HTMLElement).style.visibility = 'hidden';
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    const r = cv.getBoundingClientRect();
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.height * dpr);
+    let last = performance.now();
+    let acc = 0;
+    const frame = (now: number) => {
+      if (!alive) return;
+      raf = requestAnimationFrame(frame);
+      const dt = (now - last) / 1000;
+      if (dt < 1 / 31) return;
+      last = now;
+      acc += Math.min(dt, 0.25);
+      while (acc >= 1 / 30 && m.s.time < end && !m.s.over) {
+        m.step();
+        acc -= 1 / 30;
+      }
+      drawMatch(ctx, m, cv.width, cv.height, dpr, true);
+      o.querySelector('#hlc')!.textContent = clock(Math.max(0, MATCH_TIME - m.s.time));
+      const ls = caster.poll().sort((a, b) => b.prio - a.prio);
+      if (ls.length) {
+        castEl.innerHTML = `<b class="c${ls[0].who}">${CASTERS[ls[0].who]}</b><span>${esc(ls[0].text)}</span>`;
+        castEl.classList.add('show');
+      }
+      if (m.s.time >= end || m.s.over) {
+        cancelAnimationFrame(raf);
+        (o.querySelector('#hlagain') as HTMLElement).style.visibility = 'visible';
+      }
+    };
+    raf = requestAnimationFrame(frame);
+  };
+  const close = () => {
+    alive = false;
+    cancelAnimationFrame(raf);
+    o.remove();
+  };
+  o.querySelector<HTMLButtonElement>('.x')!.onclick = close;
+  o.querySelector<HTMLButtonElement>('#hlclose')!.onclick = close;
+  o.querySelector<HTMLButtonElement>('#hlagain')!.onclick = run;
+  run();
+}
+
+function bindMatchTabs(root: HTMLElement, m?: Match) {
   const sh = root.querySelector<HTMLElement>('.sheet')!;
+  const kf = root.querySelector<HTMLButtonElement>('[data-kf]');
+  if (kf && m) kf.onclick = () => highlight(m.setup, +kf.dataset.kf!, +kf.dataset.kf2!);
   root.querySelectorAll<HTMLButtonElement>('[data-rt]').forEach(
     (b) =>
       (b.onclick = () => {
@@ -1706,7 +1793,7 @@ function result(m: Match) {
     ${matchTabs(m, reviewHtml(m, m.setup.teams[0].id === me.id ? 0 : 1))}
     <div class="sheet-foot"><button class="cta wide" id="cont">${over ? 'Дальше' : `К игре ${ser.next + 1}`}</button></div></div>`;
   app.appendChild(overlay);
-  bindMatchTabs(overlay);
+  bindMatchTabs(overlay, m);
   document.getElementById('cont')!.onclick = () => {
     const order = lastDraft?.order;
     const bans: [string[], string[]] = lastDraft ? lastDraft.bans : [[], []];

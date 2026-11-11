@@ -867,3 +867,15 @@ button.qrow:not(.qlist .qrow) { border-radius: 16px; background: rgba(31, 26, 39
 .rtab b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rtab .dl { font-size: 11px; }
 .rtab .dl.up { color: var(--good); } .rtab .dl.down { color: var(--bad); }
+
+/* Повтор ключевой драки */
+.qrow.kfight { margin: 10px 0; width: 100%; }
+.hlv { position: fixed; inset: 0; z-index: 9; background: var(--venue); display: flex; flex-direction: column; padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom); animation: fade 200ms var(--ease); }
+.hl-top { display: flex; align-items: center; gap: 10px; padding: 12px 16px; }
+.hl-top b { font: 18px var(--display); }
+.hl-top span { color: var(--stage); font-variant-numeric: tabular-nums; margin-right: auto; }
+.hl-top .x { width: 36px; height: 36px; border-radius: 50%; font-size: 24px; line-height: 1; color: var(--muted); background: var(--panel-2); }
+.hl-field { position: relative; flex: 1; min-height: 0; }
+.hl-field canvas { width: 100%; height: 100%; display: block; }
+.hl-foot { display: flex; gap: 10px; justify-content: flex-end; align-items: center; padding: 12px 16px; }
+.hl-foot .cta { min-width: 140px; }

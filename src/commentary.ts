@@ -15,6 +15,8 @@ export interface Line {
 const pick = <T,>(a: T[]) => a[Math.floor(Math.random() * a.length)];
 const nick = (u: Unit) => u.player.nick;
 const LANE_IN = ['на верхней линии', 'в центре', 'на нижней линии'];
+const LANE_TO = ['на верхнюю линию', 'в центр', 'на нижнюю линию'];
+const laneOfSlot = (slot: number) => (slot === 3 ? 1 : slot === 4 ? 2 : slot);
 
 export class Caster {
   private m: Match;
@@ -25,9 +27,19 @@ export class Caster {
   private intro = false;
   private lastLead = 0;
   private turn: 0 | 1 = 0;
+  private ganks: { t: number; by: Unit; foe: Unit }[] = [];
+  private gankSaid = -99;
+  private earlySaid = false;
 
   constructor(m: Match) {
     this.m = m;
+  }
+
+  // Начать с текущего момента: прошлые события уже не комментируем
+  skipPast() {
+    this.seen = this.m.s.events.length;
+    this.intro = true;
+    this.lastLineT = this.m.s.time;
   }
 
   private tag(side: 0 | 1) {
@@ -62,6 +74,14 @@ export class Caster {
       const w = a === b ? null : a > b ? 0 : 1;
       out.push(this.say(w === null ? `Какая драка! Размен ${a}:${b}, никто не уступил.` : `Большая драка выиграна командой ${this.tag(w)}: ${Math.max(a, b)} на ${Math.min(a, b)}!`, 3));
     }
+    // Ганк не удался: жертва жива и ушла
+    for (const g of this.ganks.splice(0).filter((g) => {
+      if (g.foe.dead > 0) return false;
+      if (s.time - g.t < 11) return true;
+      if (s.time - this.lastLineT > 3) out.push(this.say(pick([`${nick(g.foe)} ускользает, ганк от ${nick(g.by)} не удался.`, `${nick(g.by)} пришёл зря: ${nick(g.foe)} вовремя отошёл.`]), 2));
+      return false;
+    }))
+      this.ganks.push(g);
     // Паузы заполняем разбором
     if (!out.length && s.time - this.lastLineT > 16) {
       const l = this.idle();
@@ -73,14 +93,25 @@ export class Caster {
   private line(e: MatchEvent): Line | null {
     const s = this.m.s;
     switch (e.kind) {
+      case 'gank': {
+        this.ganks.push({ t: e.t, by: e.by, foe: e.foe });
+        if (s.time - this.gankSaid < 20 || s.time - this.lastLineT < 3) return null;
+        this.gankSaid = s.time;
+        const role = e.by.slot === 3 ? 'Лесник' : 'Мидер';
+        return this.say(pick([`${role} ${nick(e.by)} идёт ${LANE_TO[laneOfSlot(e.foe.slot)]}. ${nick(e.foe)}, осторожно!`, `${nick(e.by)} пропал с карты… похоже, готовится ганк на ${nick(e.foe)}.`]), 3);
+      }
       case 'first': {
         this.kills.push({ t: e.t, side: (1 - e.victim.side) as 0 | 1 });
+        this.ganks = this.ganks.filter((g) => g.foe !== e.victim);
         const k = e.killer ? `${nick(e.killer)} на ${e.killer.champ.name}` : this.tag((1 - e.victim.side) as 0 | 1);
+        if (e.gank) return this.say(`Первая кровь с ганка! ${nick(e.gank)} приходит вовремя, и ${nick(e.victim)} падает.`, 4, { banner: 'Первая кровь', side: (1 - e.victim.side) as 0 | 1 });
+        if (e.solo) return this.say(`Первая кровь один на один ${LANE_IN[laneOfSlot(e.victim.slot)]}: ${k} переигрывает ${nick(e.victim)}!`, 4, { banner: 'Первая кровь', side: (1 - e.victim.side) as 0 | 1 });
         return this.say(pick([`Первая кровь! ${k} забирает ${nick(e.victim)}.`, `И вот она, первая кровь: ${k} открывает счёт!`]), 4, { banner: 'Первая кровь', side: (1 - e.victim.side) as 0 | 1 });
       }
       case 'kill': {
         const side = (1 - e.victim.side) as 0 | 1;
         this.kills.push({ t: e.t, side });
+        this.ganks = this.ganks.filter((g) => g.foe !== e.victim);
         const k = e.killer;
         if (k && e.multi >= 2) {
           const names = ['', '', 'Двойное убийство', 'Тройное убийство', 'Четверное убийство', 'Пятерное убийство'];
@@ -94,6 +125,8 @@ export class Caster {
             5,
             { banner: e.streak >= 5 ? 'Неудержим' : 'Серия ×3', side },
           );
+        if (e.gank && s.time - this.lastLineT > 2) return this.say(pick([`Ганк удался! ${nick(e.gank)} помогает забрать ${nick(e.victim)}.`, `${nick(e.gank)} пришёл как раз вовремя: минус ${nick(e.victim)} ${LANE_IN[laneOfSlot(e.victim.slot)]}.`]), 3, { banner: 'Ганк', side });
+        if (e.solo && k && s.time - this.lastLineT > 2) return this.say(pick([`Соло-убийство ${LANE_IN[laneOfSlot(e.victim.slot)]}! ${nick(k)} выигрывает дуэль у ${nick(e.victim)}.`, `${nick(k)} один на один забирает ${nick(e.victim)}, вот это механика!`]), 3, { banner: 'Соло-убийство', side });
         if (s.time - this.lastLineT < 5) return null; // обычные убийства не заглушают всё подряд
         return k
           ? this.say(pick([`${nick(k)} ловит ${nick(e.victim)}.`, `${k.champ.name} забирает ${nick(e.victim)}!`, `Минус ${nick(e.victim)}, хорошая работа от ${nick(k)}.`]), 2)
@@ -116,6 +149,7 @@ export class Caster {
       case 'late':
         return this.say('Поздняя игра! Строения теперь падают куда быстрее, любая ошибка может стоить матча.', 3);
     }
+    return null;
   }
 
   private idle(): Line | null {
@@ -131,7 +165,10 @@ export class Caster {
     if (k0 + k1 > 0) opts.push(`Счёт по убийствам ${k0}:${k1}.`);
     const best = [...s.units].sort((a, b) => b.kills * 2 + b.assists - (a.kills * 2 + a.assists))[0];
     if (best.kills >= 3) opts.push(`${nick(best)} на ${best.champ.name} сегодня в ударе: ${best.kills}/${best.deaths}/${best.assists}.`);
-    if (s.time < 60) opts.push('Ранняя стадия: все стоят на своих линиях и копят опыт.');
+    if (s.time < 60 && !this.earlySaid) {
+      this.earlySaid = true;
+      return this.say('Ранняя стадия: на линиях идут размены, лесники чистят лагеря и ищут момент для ганка.', 1);
+    }
     const sp = s.neutrals.find((n) => n.type === 'spirit');
     if (sp && sp.respawn <= 0 && sp.hp > 0 && s.time > 45) opts.push('Речной дух свободен. Кто первым пойдёт к реке?');
     this.lastLead = lead;

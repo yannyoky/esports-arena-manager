@@ -138,8 +138,9 @@ export type FxKind = 'shot' | 'arrow' | 'bolt' | 'aoe' | 'heal' | 'ward' | 'dash
 
 // События матча для комментаторов и баннеров
 export type MatchEvent =
-  | { kind: 'first'; t: number; killer: Unit | null; victim: Unit }
-  | { kind: 'kill'; t: number; killer: Unit | null; victim: Unit; multi: number; streak: number; shutdown: number }
+  | { kind: 'first'; t: number; killer: Unit | null; victim: Unit; gank?: Unit; solo?: boolean }
+  | { kind: 'kill'; t: number; killer: Unit | null; victim: Unit; multi: number; streak: number; shutdown: number; gank?: Unit; solo?: boolean }
+  | { kind: 'gank'; t: number; by: Unit; foe: Unit } // только для зрителя: кто пошёл ганкать
   | { kind: 'ace'; t: number; side: 0 | 1 }
   | { kind: 'tower'; t: number; side: 0 | 1; lane: LaneId; tier: 0 | 1 }
   | { kind: 'objective'; t: number; side: 0 | 1; type: NeutralType }
@@ -378,8 +379,12 @@ export class Match {
       this.fx({ kind: 'gold', x: killer.x, y: killer.y, color: '#ffd166', t: 1, text: '+' + Math.round(100 + bounty) });
     }
     const ev = this.s.events;
-    if (this.s.kills[0] + this.s.kills[1] === 1) ev.push({ kind: 'first', t: this.s.time, killer, victim });
-    else ev.push({ kind: 'kill', t: this.s.time, killer, victim, multi: killer?.multi ?? 0, streak: killer?.streak ?? 0, shutdown });
+    // Для комментаторов: удачный ганк и убийство один на один
+    const gank = this.s.units.find((a) => a.side === foe && a.gank > 0 && a.foe === victim && a.dead <= 0);
+    const helpers = Object.entries(victim.hitBy).filter(([i, t]) => this.s.units[+i] !== killer && this.s.time - t < 8).length;
+    const solo = !!killer && !helpers && killer.slot !== 3 && victim.slot !== 3 && this.s.time < 200;
+    if (this.s.kills[0] + this.s.kills[1] === 1) ev.push({ kind: 'first', t: this.s.time, killer, victim, gank, solo });
+    else ev.push({ kind: 'kill', t: this.s.time, killer, victim, multi: killer?.multi ?? 0, streak: killer?.streak ?? 0, shutdown, gank, solo });
     if (this.s.units.every((u) => u.side !== victim.side || u.dead > 0 || u === victim)) ev.push({ kind: 'ace', t: this.s.time, side: victim.side });
     this.shareXp(foe, victim.x, victim.y, (40 + victim.level * 8) * this.R.killXp + bounty, 320);
     // помощь: все враги, кто бил жертву за последние 8 секунд
@@ -544,6 +549,11 @@ export class Match {
     return [own.x, own.y];
   }
 
+  // Цель глубоко под вражеской башней: туда ганкать нельзя
+  private deepUnderTower(side: 0 | 1, p: { x: number; y: number }) {
+    return this.s.towers.some((t) => t.side !== side && t.hp > 0 && Math.hypot(t.x - p.x, t.y - p.y) < 115) || Math.hypot(this.s.cores[1 - side].x - p.x, this.s.cores[1 - side].y - p.y) < 200;
+  }
+
   private underEnemyTower(side: 0 | 1, p: { x: number; y: number }) {
     return [...this.s.towers, ...this.s.cores].some((t) => t.side !== side && t.hp > 0 && dist(t, p) < TOWER_RANGE + 10);
   }
@@ -704,29 +714,29 @@ export class Match {
     const s = this.s;
     const t = u.foe;
     if (u.gank > 0 && t && t.dead <= 0 && t.hidden <= 0) {
-      const safe = !this.underEnemyTower(u.side, t) || t.hp < t.maxHp * 0.25;
+      const safe = !this.deepUnderTower(u.side, t) || t.hp < t.maxHp * 0.25;
       if (safe && !(u.hp < u.maxHp * 0.35)) return dist(u, t) < u.champ.range + 160 ? { kind: 'attack', target: t } : { kind: 'move', x: t.x, y: t.y };
       u.gank = 0;
     }
     if (u.gank > 0) u.gank = 0;
-    if (u.gankCd > 0 || u.hp < u.maxHp * 0.6) return null;
+    if (u.gankCd > 0 || u.hp < u.maxHp * 0.5) return null;
     const jg = u.slot === 3;
     const mid = u.slot === 1;
     if (!(jg && s.time > 30) && !(mid && s.time > 50)) return null;
     // мидер уходит, только когда его линия спокойна
     if (mid && this.visibleEnemies(u, 300).length) return null;
     let best: Unit | null = null;
-    let bs = jg ? 0.9 : 1.4;
+    let bs = jg ? 0.6 : 1.0;
     for (const e of s.units) {
       if (e.side === u.side || e.dead > 0 || e.hidden > 0 || e.slot === 3) continue;
       const lane = laneOf(e.slot);
       if (mid && lane === 1) continue;
       const d = dist(u, e);
-      if (d > (jg ? 720 : 520) || this.underEnemyTower(u.side, e)) continue;
+      if (d > (jg ? 720 : 520) || this.deepUnderTower(u.side, e)) continue;
       const t = nearestT(lane, e.x, e.y);
       const over = u.side === 0 ? 0.5 - t : t - 0.5; // >0: враг на нашей половине
       const help = s.units.some((a) => a.side === u.side && a !== u && a.dead <= 0 && laneOf(a.slot) === lane && a.slot !== 3 && dist(a, e) < 320);
-      const score = over * 3 + (1 - e.hp / e.maxHp) * 1.6 + (help ? 0.5 : 0) - d / 900 + iq * 0.35 + this.rng.range(-0.15, 0.15);
+      const score = over * 2.5 + (1 - e.hp / e.maxHp) * 1.4 + (help ? 0.5 : 0) - d / 1400 + iq * 0.3 + this.rng.range(-0.15, 0.15);
       if (score > bs) {
         bs = score;
         best = e;
@@ -738,6 +748,7 @@ export class Match {
     }
     u.foe = best;
     u.gank = 11;
+    s.events.push({ kind: 'gank', t: s.time, by: u, foe: best });
     u.gankCd = jg ? 20 : 30;
     return { kind: 'move', x: best.x, y: best.y };
   }
